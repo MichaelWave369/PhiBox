@@ -385,7 +385,8 @@ export default function App() {
       const seconds = await audio.loadSample(index, file);
       await storeSample(index, file.name, file);
       persistedSamples.current = await getSamples();
-      setPads(old => old.map((pad, i) => i === index ? ({ ...pad, sampleName: file.name }) : pad));
+      setPads(old => old.map((pad, i) => i === index ?
+        ({ ...pad, sampleName: file.name, chop: null, chopName: undefined }) : pad));
       setStatus('SAMPLE LOADED: ' + file.name.slice(0, 28) + ' / ' + seconds.toFixed(1) + ' SEC');
     } catch (error) { setStatus(error.message || 'SAMPLE FAILED'); }
   };
@@ -394,14 +395,78 @@ export default function App() {
       audio.removeSample(selected);
       await removeSample(selected);
       persistedSamples.current = persistedSamples.current.filter(entry => entry.index !== selected);
-      setPads(old => old.map((pad, i) => i === selected ? ({ ...pad, sampleName: undefined }) : pad));
+      setPads(old => old.map((pad, i) => i === selected ?
+        ({ ...pad, sampleName: undefined, chop: null, chopName: undefined }) : pad));
       setStatus('SAMPLE REMOVED: ORIGINAL VOICE RESTORED');
     } catch (error) { setStatus(error.message); }
   };
 
+  const loadBreak = async file => {
+    if (!file) return;
+    if (!file.type.startsWith('audio/') && !/\.(wav|mp3|ogg|flac|aif|aiff|m4a)$/i.test(file.name)) {
+      setStatus('CHOOSE AN AUDIO FILE'); return;
+    }
+    try {
+      await ready();
+      const id = await sourceFingerprint(file);
+      const info = await audio.loadChopSource(id, file);
+      const sameSource = chopDeckRef.current?.id === id;
+      setChopDeck({ id, name: file.name });
+      setWavePeaks(info.peaks);
+      setChopSeconds(info.duration);
+      if (!sameSource) { setChopMarkers(equalMarkers()); setSelectedSlice(0); setFlipChops(false); }
+      setStatus('BREAK DECODED: ' + file.name.slice(0, 40) + ' / ' + info.duration.toFixed(2) + 's');
+      try { await saveChopSource(id, file.name, file); }
+      catch { setStatus('BREAK PLAYS NOW, BUT LOCAL STORAGE FAILED: RELOAD FILE NEXT VISIT'); }
+    } catch (error) { setStatus(error.message || 'BREAK COULD NOT BE DECODED'); }
+  };
+
+  const mapChopsToPads = () => {
+    if (!chopDeck || !audio.chopSources.has(chopDeck.id)) {
+      setStatus('LOAD THE BREAK BEFORE SENDING SLICES TO PADS');
+      return;
+    }
+    const regions = chopAssignments(chopDeck.id, chopMarkers, flipChops);
+    const basename = chopDeck.name.replace(/\.[^.]+$/, '').slice(0, 9).toUpperCase();
+    setPads(old => old.map((pad, i) => ({
+      ...pad, chop: regions[i], chopName: basename + ' ' + String(i + 1).padStart(2, '0'), tune: 0
+    })));
+    setStatus('16 CHOPS ON PADS / LIVE SEQUENCER READY / ORIGINAL PAD SAMPLES PRESERVED');
+  };
+
+  const previewSlice = async () => {
+    if (!chopDeck) { setStatus('LOAD A BREAK TO PREVIEW'); return; }
+    try {
+      await ready();
+      if (!audio.chopSources.has(chopDeck.id)) {
+        const saved = (await getChopSources()).find(item => item.id === chopDeck.id);
+        if (saved) await audio.loadChopSource(saved.id, saved.file);
+      }
+      audio.playChop({
+        sourceId: chopDeck.id,
+        ...sliceFor(chopMarkers, selectedSlice), reverse: reversePreview
+      }, 0.9, 0, undefined, true);
+      setStatus('PREVIEWING SLICE ' + String(selectedSlice + 1).padStart(2, '0') + (reversePreview ? ' IN REVERSE' : ''));
+    } catch (error) { setStatus(error.message || 'SLICE PREVIEW FAILED. RELOAD THE SOURCE FILE.'); }
+  };
+
+  const togglePadReverse = () => {
+    if (!pads[selected].chop) return;
+    setPads(old => old.map((pad, i) => i === selected ?
+      ({ ...pad, chop: { ...pad.chop, reverse: !pad.chop.reverse } }) : pad));
+    setStatus('PAD ' + String(selected + 1).padStart(2, '0') + ' REVERSE TOGGLED');
+  };
+
+  const clearPadChop = () => {
+    setPads(old => old.map((pad, i) => i === selected ?
+      ({ ...pad, chop: null, chopName: undefined }) : pad));
+    setStatus('CHOP REMOVED / PREVIOUS PAD SAMPLE OR SYNTH RESTORED');
+  };
+
   const onExport = () => {
-    const project = { version: 2, name, pads, banks, velocities, bank, bpm, swing, fx, synth, chain, songMode, quantize, padVelocity,
-      notice: 'Custom sample audio is saved in local browser storage, not inside this JSON export.' };
+    const project = { version: 3, name, pads, banks, velocities, bank, bpm, swing, fx, synth, chain, songMode, quantize, padVelocity,
+      chopDeck, chopMarkers, flipChops,
+      notice: 'Audio files are NOT embedded in JSON. Back up your source breaks and pad samples; reimport them on other devices.' };
     download(new Blob([JSON.stringify(project, null, 2)], { type: 'application/json' }),
       'PhiBox-' + name.replace(/[^a-z0-9]+/gi, '-').slice(0, 36) + '.json');
     setStatus('PROJECT EXPORTED / SAMPLES REMAIN LOCAL');
@@ -416,7 +481,21 @@ export default function App() {
       stopTransport();
       const d = factory();
       setName(String(data.name || d.name).slice(0, 44));
-      setPads(d.pads.map((p, i) => ({ ...p, tune: clamp(data.pads[i]?.tune, -12, 12) })));
+      setPads(d.pads.map((p, i) => ({
+        ...p, tune: clamp(data.pads[i]?.tune, -12, 12),
+        chop: normalizeChop(data.pads[i]?.chop),
+        chopName: typeof data.pads[i]?.chopName === 'string' ? data.pads[i].chopName.slice(0, 60) : undefined
+      })));
+      const nextDeck = typeof data.chopDeck?.id === 'string' && /^[a-f0-9]{64}$/.test(data.chopDeck.id)
+        ? { id: data.chopDeck.id, name: String(data.chopDeck.name || 'BREAK').slice(0, 100) } : null;
+      setChopDeck(nextDeck);
+      setChopMarkers(normalizeMarkers(data.chopMarkers));
+      setFlipChops(data.flipChops === true);
+      setSelectedSlice(0);
+      if (nextDeck && audio.chopSources.has(nextDeck.id)) {
+        const info = audio.getChopInfo(nextDeck.id);
+        setWavePeaks(info.peaks); setChopSeconds(info.duration);
+      } else { setWavePeaks([]); setChopSeconds(0); }
       setBanks(data.banks); setVelocities(normalizeVelocities(data.velocities, data.banks));
       setBank(clamp(data.bank, 0, 3));
       setChain(sanitizeChain(data.chain)); setSongMode(data.songMode === true);
@@ -427,7 +506,7 @@ export default function App() {
       await clearSamples();
       persistedSamples.current = [];
       audio.samples.clear();
-      setStatus('PROJECT IMPORTED / RELOAD CUSTOM SAMPLES');
+      setStatus('PROJECT IMPORTED / ORIGINAL AUDIO NOT EMBEDDED. RELOAD ANY MISSING BREAK OR PAD SAMPLES.');
     } catch (error) { setStatus(error.message || 'IMPORT FAILED'); }
   };
 
@@ -542,24 +621,31 @@ export default function App() {
               {pads.map((p, index) => <button key={index} type="button" onPointerDown={() => triggerPad(index)}
                 onDragOver={e => e.preventDefault()} onDrop={e => { e.preventDefault(); importSample(index, e.dataTransfer.files[0]); }}
                 className={'pad pad-' + p.color + (selected === index ? ' selected' : '') + (lit.includes(index) ? ' pad-hit' : '')}
-                aria-label={'Play pad ' + (index + 1) + ': ' + (p.sampleName || p.name)}>
+                aria-label={'Play pad ' + (index + 1) + ': ' + (p.chop ? p.chopName : p.sampleName || p.name)}>
                 <span className="pad-top"><span>{String(index + 1).padStart(2, '0')}</span><span className="pad-led" /></span>
-                <span className="pad-middle">{p.sampleName ? '◈' : p.group === 'drums' ? '✳' : '∿'}</span>
-                <span className="pad-name">{p.sampleName ? p.sampleName.replace(/\.[^.]+$/, '').slice(0, 12) : p.name}</span>
+                <span className="pad-middle">{p.chop ? '≋' : p.sampleName ? '◈' : p.group === 'drums' ? '✳' : '∿'}</span>
+                <span className="pad-name">{p.chop ? p.chopName || 'CHOP ' + (index + 1) :
+                  p.sampleName ? p.sampleName.replace(/\.[^.]+$/, '').slice(0, 12) : p.name}</span>
                 <span className="pad-key">{HOTKEYS[index].toUpperCase()}</span>
               </button>)}
             </div>
             <div className="selected-editor">
               <div><span className="overline">PAD {String(selected + 1).padStart(2, '0')} / EDIT</span>
-                <strong>{pad.sampleName ? pad.sampleName.slice(0, 24) : pad.name}</strong>
-                <small>{pad.sampleName ? 'CUSTOM SAMPLE · LOCAL STORAGE' : pad.group === 'drums' ? 'ANALOG-MODELED DRUM' : 'SYNTHESIZED INSTRUMENT'}</small></div>
+                <strong>{pad.chop ? pad.chopName || 'SLICED BREAK' : pad.sampleName ? pad.sampleName.slice(0, 24) : pad.name}</strong>
+                <small>{pad.chop ? (pad.chop.reverse ? 'REVERSE CHOP' : 'SLICED AUDIO') + ' · NON-DESTRUCTIVE' :
+                  pad.sampleName ? 'CUSTOM SAMPLE · LOCAL STORAGE' : pad.group === 'drums' ? 'ANALOG-MODELED DRUM' : 'SYNTHESIZED INSTRUMENT'}</small></div>
               <label className="tune-control"><span>TUNE</span>
                 <input aria-label="Selected pad tuning in semitones" type="range" min="-12" max="12" value={pad.tune || 0}
                   onChange={e => setPads(old => old.map((p, i) => i === selected ? { ...p, tune: Number(e.target.value) } : p))} />
                 <b>{pad.tune > 0 ? '+' : ''}{pad.tune || 0} ST</b></label>
               <div className="sample-actions">
                 <button className="small-accent-button" onClick={() => { targetRef.current = selected; fileRef.current.click(); }}><Icon name="upload" size={14} /> LOAD SAMPLE</button>
-                {pad.sampleName && <button className="small-ghost-button" onClick={removeSelectedSample}>RESET</button>}
+                {pad.chop && <>
+                  <button className="small-ghost-button" onClick={togglePadReverse}>
+                    {pad.chop.reverse ? 'FORWARD ↗' : 'REVERSE ↶'}</button>
+                  <button className="small-ghost-button" onClick={clearPadChop}>UNDO CHOP</button>
+                </>}
+                {!pad.chop && pad.sampleName && <button className="small-ghost-button" onClick={removeSelectedSample}>RESET</button>}
               </div>
             </div>
             <input ref={fileRef} hidden type="file" accept="audio/*,.wav,.mp3,.flac,.aif,.aiff,.ogg,.m4a"
