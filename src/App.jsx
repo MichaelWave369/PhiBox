@@ -1384,9 +1384,9 @@ export default function App() {
           </div>
         </section>
 
+        <PhiFlexRack rack={instrument} onChange={setInstrument}
+          playing={playing} playhead={playhead} onAudition={keyDown} onRelease={keyUp}/>
         <div className="lower-grid">
-          <PhiFlexRack rack={instrument} onChange={setInstrument}
-            playing={playing} playhead={playhead} onAudition={keyDown} onRelease={keyUp}/>
           <section className="panel synth-panel">
             <PanelHeader kicker="03 / SOUND DESIGN" title="Oscillator Lab" right={<span className="chip">POLYPHONIC SYNTH</span>} />
             <div className="wave-select"><span className="overline">WAVEFORM</span><div className="wave-options">
