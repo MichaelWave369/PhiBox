@@ -1,12 +1,8 @@
 /* Serializable presets and arpeggio state shared by PhiBox R8.
    The actual chip sounds are played by vendored ChippyDip Web Audio modules. */
-export const CHIP_CATEGORIES=['nes','gameboy','genesis','snes','double'];
-export const CHIP_PATCHES={
-  nes:['hero','pluck','hollow','bass','noise'],
-  gameboy:['pocket-round','pocket-bite','pocket-bell','pocket-tooth'],
-  genesis:['fm-voltage','fm-grit','fm-crystal','fm-horizon'],
-  snes:['snes-harp','snes-bell','snes-strings','snes-choir']
-};
+import {CHIP_CATEGORIES, CHIP_PATCHES} from './chip-catalog.js';
+import {sanitizeCustom} from './chip-validation.js';
+export {CHIP_CATEGORIES, CHIP_PATCHES} from './chip-catalog.js';
 export const ALL_CHIP_IDS=Object.values(CHIP_PATCHES).flat();
 const DEFAULT_LAYERS=[
   {chip:'nes',presetId:'hero',enabled:true,gain:.6,transpose:0},
@@ -18,7 +14,8 @@ const clamp=(n,lo,hi)=>Math.max(lo,Math.min(hi,n));
 export function makeInstrument(){
   return {
     mode:'osc',family:'nes',presetId:'hero',layers:DEFAULT_LAYERS.map(l=>({...l})),
-    favorites:[],sequence:Array(16).fill(null),sequenceOn:false,note:60,gate:.8
+    favorites:[],sequence:Array(16).fill(null),sequenceOn:false,note:60,gate:.8,
+    duty:.5,custom:{}
   };
 }
 export function sanitizeInstrument(raw){
@@ -39,12 +36,14 @@ export function sanitizeInstrument(raw){
   return {
     mode:raw.mode==='chip'?'chip':'osc',
     family,presetId,layers,
+    duty:[.125,.25,.5,.75].includes(raw.duty)?raw.duty:.5,
+    custom:sanitizeCustom(raw.custom),
     favorites:Array.isArray(raw.favorites) ?
       [...new Set(raw.favorites.filter(id=>ALL_CHIP_IDS.includes(id)))].slice(0,20):[],
     sequence:Array.isArray(raw.sequence)&&raw.sequence.length===16?
-      raw.sequence.map(n=>Number.isInteger(n)&&n>=36&&n<=96?n:null):d.sequence,
+      raw.sequence.map(n=>Number.isInteger(n)&&n>=24&&n<=108?n:null):d.sequence,
     sequenceOn:raw.sequenceOn===true,
-    note:Number.isInteger(raw.note)?clamp(raw.note,36,96):d.note,
+    note:Number.isInteger(raw.note)?clamp(raw.note,24,108):d.note,
     gate:Number.isFinite(raw.gate)?clamp(raw.gate,.1,1):d.gate
   };
 }
