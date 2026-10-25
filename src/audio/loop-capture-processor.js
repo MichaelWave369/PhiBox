@@ -1,4 +1,4 @@
-/* Frame-accurate AudioWorklet PCM capture. Input 0 = live/dry bus; input 1 = master. */
+/* Frame-accurate capture: input 0 = pads + external input, input 1 = master, input 2 = external input only. */
 class PhiLoopCapture extends AudioWorkletProcessor {
   constructor() {
     super();
@@ -13,7 +13,7 @@ class PhiLoopCapture extends AudioWorkletProcessor {
         const { id, startFrame, frames, source } = command;
         const maxFrames = Math.ceil(sampleRate * 25);
         if (!Number.isSafeInteger(frames) || frames < 1 || frames > maxFrames ||
-          !Number.isSafeInteger(startFrame) || source !== 'live' && source !== 'master') {
+          !Number.isSafeInteger(startFrame) || !['live','master','input'].includes(source)) {
           this.port.postMessage({ type:'error', id, message: 'Invalid capture window' });
           return;
         }
@@ -29,7 +29,7 @@ class PhiLoopCapture extends AudioWorkletProcessor {
     if (output) for (const channel of output) channel.fill(0);
     const job = this.job;
     if (!job) return true;
-    const input = inputs[job.source === 'master' ? 1 : 0] || [];
+    const input = inputs[job.source === 'master' ? 1 : job.source === 'input' ? 2 : 0] || [];
     const left = input[0], right = input[1] || left;
     const framesInBlock = output?.[0]?.length || left?.length || 128;
     for(let i=0;i<framesInBlock;i++){
