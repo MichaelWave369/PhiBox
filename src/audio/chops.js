@@ -33,6 +33,19 @@ export function normalizeChop(raw) {
       start < 0 || end > 1 || end - start < 0.002) return null;
   return { sourceId, start, end, reverse: raw.reverse === true };
 }
+export function playbackWindow(chop, sourceDuration, tune = 0) {
+  const region = normalizeChop(chop);
+  if (!region || !Number.isFinite(sourceDuration) || sourceDuration <= 0) return null;
+  const duration = (region.end - region.start) * sourceDuration;
+  const rate = Math.pow(2, Math.min(12, Math.max(-12, Number(tune) || 0)) / 12);
+  return {
+    offset: (region.reverse ? 1 - region.end : region.start) * sourceDuration,
+    duration,
+    rate,
+    audibleSeconds: duration / rate
+  };
+}
+
 export function chopAssignments(id, markers, flipped = false) {
   const m = normalizeMarkers(markers);
   return Array.from({ length: CHOP_COUNT }, (_, i) => ({
