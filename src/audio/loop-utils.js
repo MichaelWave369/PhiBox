@@ -2,7 +2,7 @@ export const LOOP_TRACKS = 4;
 export const LOOP_BARS = [1,2,4];
 export const LOOP_MAX_SECONDS = 25;
 export const LOOP_DEFAULTS = () => Array.from({length:LOOP_TRACKS},(_,i)=>({
-  id:i, name:'LOOP '+String(i+1).padStart(2,'0'), muted:false,volume:0.8, bars:1, bpm:120, hasAudio:false
+  id:i, name:'LOOP '+String(i+1).padStart(2,'0'), muted:false,solo:false,pan:0,volume:0.8, bars:1, bpm:120, hasAudio:false
 }));
 export const clamp01 = n => Math.min(1,Math.max(0,Number(n)||0));
 export function normalizeLoops(raw) {
@@ -13,6 +13,8 @@ export function normalizeLoops(raw) {
     return {
       ...fallback,
       muted:entry.muted===true,
+      solo:entry.solo===true,
+      pan:Number.isFinite(entry.pan)?Math.max(-1,Math.min(1,entry.pan)):0,
       volume:clamp01(entry.volume ?? fallback.volume),
       name:typeof entry.name==='string' ? entry.name.slice(0,32):fallback.name,
       bpm:Number.isFinite(entry.bpm)&&entry.bpm>=40&&entry.bpm<=240?entry.bpm:120,
