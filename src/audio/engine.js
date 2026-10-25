@@ -144,16 +144,17 @@ class PhiAudioEngine {
     src.stop(time + length + 0.02);
   }
 
-  playDrum(kind, velocity, time) {
+  playDrum(kind, velocity, time, tune = 0) {
     const v = clamp(velocity, 0.05, 1);
+    const pitch = Math.pow(2, clamp(tune, -12, 12) / 12);
     if (kind === 'kick') {
       const gain = this.outputGain(time, v * 0.95, 0.002, 0.48);
-      this.oscillator(155, 'sine', time, 0.5, gain, 45);
+      this.oscillator(155 * pitch, 'sine', time, 0.5, gain, 45 * pitch);
       return;
     }
     if (kind === 'snare') {
       this.noise(time, 0.16, v * 0.44, 'highpass', 1300);
-      this.oscillator(175, 'triangle', time, 0.12, this.outputGain(time, v * 0.22, 0.001, 0.1), 100);
+      this.oscillator(175 * pitch, 'triangle', time, 0.12, this.outputGain(time, v * 0.22, 0.001, 0.1), 100 * pitch);
       return;
     }
     if (kind === 'hat' || kind === 'openhat') {
@@ -165,16 +166,16 @@ class PhiAudioEngine {
       return;
     }
     if (kind === 'tom') {
-      this.oscillator(175, 'sine', time, 0.36, this.outputGain(time, v * 0.55, 0.002, 0.34), 76);
+      this.oscillator(175 * pitch, 'sine', time, 0.36, this.outputGain(time, v * 0.55, 0.002, 0.34), 76 * pitch);
       return;
     }
     if (kind === 'rim') {
-      this.oscillator(680, 'square', time, 0.05, this.outputGain(time, v * 0.12, 0.001, 0.035));
+      this.oscillator(680 * pitch, 'square', time, 0.05, this.outputGain(time, v * 0.12, 0.001, 0.035));
       this.noise(time, 0.038, v * 0.19, 'highpass', 3600);
       return;
     }
     if (kind === 'perc') {
-      this.oscillator(430, 'triangle', time, 0.2, this.outputGain(time, v * 0.38, 0.002, 0.18), 210);
+      this.oscillator(430 * pitch, 'triangle', time, 0.2, this.outputGain(time, v * 0.38, 0.002, 0.18), 210 * pitch);
     }
   }
 
@@ -227,9 +228,9 @@ class PhiAudioEngine {
       src.connect(output).connect(this.input);
       src.start(time);
     } else if (pad.group === 'drums') {
-      this.playDrum(pad.kind, velocity, time);
+      this.playDrum(pad.kind, velocity, time, pad.tune || 0);
     } else {
-      this.playSynth(midiToHz(pad.note), velocity, time, pad.kind);
+      this.playSynth(midiToHz(pad.note + (Number(pad.tune) || 0)), velocity, time, pad.kind);
     }
   }
 
