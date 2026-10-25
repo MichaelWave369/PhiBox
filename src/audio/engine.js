@@ -224,7 +224,7 @@ class PhiAudioEngine {
     source.playbackRate.value=rate;
     source.connect(output.gain);
     // A short late-start offset keeps playback bar-phase coherent after capturing a take.
-    const at=this.ctx.currentTime+.04;
+    const at=Math.max(this.ctx.currentTime+.04,this.transportOrigin);
     const elapsed=Math.max(0,at-this.transportOrigin);
     const offset=(elapsed*rate)%buffer.duration;
     source.start(at,offset);
