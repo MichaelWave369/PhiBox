@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   CHOP_COUNT, equalMarkers, validMarkers, normalizeMarkers, moveMarker,
-  sliceFor, chopAssignments, normalizeChop, audioPeaks
+  sliceFor, chopAssignments, normalizeChop, playbackWindow, audioPeaks
 } from '../src/audio/chops.js';
 
 const id = 'b'.repeat(64);
@@ -39,4 +39,12 @@ test('waveform peak extraction is finite on a tiny buffer', () => {
   const peaks = audioPeaks({length:5,numberOfChannels:1,getChannelData:()=>channel},64);
   assert.equal(peaks.length,64);
   assert.ok(peaks.every(p => Number.isFinite(p.min) && Number.isFinite(p.max)));
+});
+
+test('reverse playback addresses exactly the mirrored segment without changing source audio', () => {
+  const forward = playbackWindow({sourceId:id,start:0.25,end:0.375,reverse:false}, 8, 0);
+  const reversed = playbackWindow({sourceId:id,start:0.25,end:0.375,reverse:true}, 8, 12);
+  assert.deepEqual(forward, {offset:2,duration:1,rate:1,audibleSeconds:1});
+  assert.deepEqual(reversed, {offset:5,duration:1,rate:2,audibleSeconds:0.5});
+  assert.equal(playbackWindow({sourceId:id,start:0,end:2,reverse:false}, 8), null);
 });
