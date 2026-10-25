@@ -1017,6 +1017,11 @@ export default function App() {
                 <option value="1">1 BAR</option><option value="2">2 BARS</option><option value="4">4 BARS</option>
               </select></label>
             <span>RECORDING STARTS ON THE NEXT BAR · SOURCE: LIVE INSTRUMENT BUS</span>
+            <label className="forge-overdub-level">OVERDUB LAYER LEVEL
+              <input type="range" aria-label="Overdub layer gain" min="0" max="1.5" step=".05"
+                value={overdubGain} disabled={!!captureState}
+                onChange={e=>setOverdubGain(Number(e.target.value))}/>
+              <b>{Math.round(overdubGain*100)}%</b></label>
             {captureState && <button type="button" className="forge-cancel" onClick={()=>audio.cancelCapture()}>
               CANCEL CAPTURE</button>}
           </div>
@@ -1043,6 +1048,19 @@ export default function App() {
                   <button type="button" className="forge-track-record"
                     disabled={!!captureState} onClick={()=>captureLoop(index)}>
                     <Icon name="record" size={13}/> {loop.hasAudio?'REPLACE':'REC LOOP'}</button>
+                  <button type="button" className="forge-overdub-button"
+                    disabled={!!captureState||!loop.hasAudio} onClick={()=>captureLoop(index,true)}
+                    title={'Add live performance onto Loop '+(index+1)+' without erasing the existing take'}>
+                    <Icon name="layers" size={13}/> OVERDUB</button>
+                  <button type="button" className="forge-undo-button"
+                    disabled={!!captureState||!loopHistory[index].undo}
+                    onClick={()=>toggleLoopHistory(index,'undo')}>UNDO</button>
+                  <button type="button" className="forge-undo-button"
+                    disabled={!!captureState||!loopHistory[index].redo}
+                    onClick={()=>toggleLoopHistory(index,'redo')}>REDO</button>
+                  <button type="button" className="forge-export-button"
+                    disabled={!!captureState||!loop.hasAudio}
+                    onClick={()=>exportLoopWav(index)}><Icon name="download" size={12}/> WAV</button>
                   <button type="button" className="forge-track-clear" disabled={!!captureState||!loop.hasAudio}
                     onClick={()=>clearLoopTrack(index)}>CLEAR</button>
                 </div>
