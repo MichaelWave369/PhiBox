@@ -600,20 +600,61 @@ export default function App() {
   };
 
 
+  const connectLiveInput = async deviceId => {
+    if(audio.captureJob) {setStatus('CANCEL RECORDING BEFORE CHANGING THE AUDIO INPUT');return;}
+    try{
+      const label=await audio.connectInput(deviceId || null);
+      audio.setInputSettings({volume:inputGain,monitoring:false});
+      setInputEnabled(true);setInputName(label);setInputMonitor(false);
+      const devices=await audio.listInputDevices();
+      setInputDevices(devices);
+      const activeId=deviceId||audio.micInput?.stream.getAudioTracks()[0]?.getSettings?.().deviceId||'';
+      setInputDeviceId(activeId);
+      setStatus('INPUT CONNECTED: '+label+' / MONITOR OFF FOR FEEDBACK SAFETY');
+    }catch(error){
+      setInputEnabled(!!audio.micInput);
+      setStatus('INPUT CONNECTION FAILED: '+(error.message||'PERMISSION DENIED'));
+    }
+  };
+
+  const disconnectLiveInput = () => {
+    if(audio.captureJob && audio.captureJob.source==='input'){
+      setStatus('CANCEL THE INPUT TAKE BEFORE DISCONNECTING');return;
+    }
+    audio.disconnectInput();
+    setInputEnabled(false);setInputName('');setInputMonitor(false);setInputLevel(0);
+    setStatus('AUDIO INPUT DISCONNECTED / MICROPHONE RELEASED');
+  };
+
+  const changeMonitor = enabled => {
+    try {
+      audio.setInputSettings({monitoring:enabled});
+      setInputMonitor(enabled);
+      setStatus(enabled?'LIVE MONITOR ON / USE HEADPHONES TO AVOID FEEDBACK':'LIVE MONITOR OFF / INPUT STILL READY TO RECORD');
+    }catch(error){setStatus(error.message);}
+  };
+
+  const changeInputGain = value => {
+    setInputGain(value);
+    if(audio.micInput)audio.setInputSettings({volume:value});
+  };
+
   const changeLoopSettings = (index, update) => {
     setLoops(old=>old.map((track,i)=>i===index?{...track,...update}:track));
     if (audio.ctx) audio.setLoopTrack(index,{...loopsRef.current[index],...update});
   };
 
-  const captureLoop = async (index, overdub = false) => {
+  const captureLoop = async (index, overdub = false, punch = false) => {
     try {
       if (audio.captureJob) { setStatus('FINISH OR CANCEL THE CURRENT RECORDING FIRST'); return; }
+      if(captureSource==='input'&&!audio.micInput)throw new Error('CONNECT A MIC OR AUDIO INTERFACE BEFORE INPUT-ONLY RECORDING');
       if (!audio.playing) await startTransport();
-      const requestedBars=overdub ? loopsRef.current[index].bars : loopBars;
-      setCaptureState({source:'live',track:index,stage:'preparing',overdub});
+      const requestedBars=(overdub||punch) ? loopsRef.current[index].bars : loopBars;
+      const region=punch?{start:punchStart/16,end:punchEnd/16}:null;
+      setCaptureState({source:captureSource,track:index,stage:'preparing',overdub,punch});
       await audio.armLoopCapture({
-        source:'live',track:index,bars:requestedBars,overdub,overdubGain,
-        onState:stage=>setCaptureState({source:'live',track:index,stage,overdub}),
+        source:captureSource,track:index,bars:requestedBars,overdub,punch:region,overdubGain,
+        onState:stage=>setCaptureState({source:captureSource,track:index,stage,overdub,punch}),
         onDone:async(buffer,info)=>{
           setCaptureState(null);
           // Respect mixer settings chosen before the first take was recorded.
@@ -623,7 +664,7 @@ export default function App() {
           setLoops(old=>old.map((track,i)=>i===index?{
             ...track,hasAudio:true,bpm:info.bpm,bars:info.bars
           }:track));
-          setStatus('LOOP '+(index+1)+(info.overdub?' OVERDUBBED':' CAPTURED')+' / '+info.bars+' BAR(S) / PLAYING');
+          setStatus('LOOP '+(index+1)+(info.punch?' PUNCHED':info.overdub?' OVERDUBBED':' CAPTURED')+' / '+info.bars+' BAR(S) / PLAYING');
           try {
             await saveLoopTake(index,info.bpm,info.bars,buffer.sampleRate,
               buffer.getChannelData(0).slice(),buffer.getChannelData(1).slice());
@@ -723,9 +764,10 @@ export default function App() {
   };
 
   const onExport = () => {
-    const project = { version: 6, name, pads, banks, velocities, bank, bpm, swing, fx, synth, chain, songMode, quantize, padVelocity,
+    const project = { version: 7, name, pads, banks, velocities, bank, bpm, swing, fx, synth, chain, songMode, quantize, padVelocity,
       chopDeck, chopMarkers, flipChops, sourceBpm, beatBars, gridStart, syncMode,
-      loopBars, overdubGain, loopSettings:loops.map(({name,muted,volume,bars,bpm})=>({name,muted,volume,bars,bpm})),
+      loopBars, overdubGain, captureSource,punchStart,punchEnd,
+      loopSettings:loops.map(({name,muted,solo,pan,volume,bars,bpm})=>({name,muted,solo,pan,volume,bars,bpm})),
       notice: 'Audio files are NOT embedded in JSON. Back up your source breaks and pad samples; reimport them on other devices.' };
     download(new Blob([JSON.stringify(project, null, 2)], { type: 'application/json' }),
       'PhiBox-' + name.replace(/[^a-z0-9]+/gi, '-').slice(0, 36) + '.json');
@@ -755,6 +797,10 @@ export default function App() {
       setFlipChops(data.flipChops === true);
       setSourceBpm(safeTempo(data.sourceBpm));
       setOverdubGain(clamp(data.overdubGain ?? .85,0,1.5));
+      setCaptureSource(data.captureSource==='input'?'input':'live');
+      const restoredPunchStart=Number.isInteger(data.punchStart)&&data.punchStart>=0&&data.punchStart<16?data.punchStart:4;
+      const restoredPunchEnd=Number.isInteger(data.punchEnd)&&data.punchEnd>restoredPunchStart&&data.punchEnd<=16?data.punchEnd:8;
+      setPunchStart(restoredPunchStart);setPunchEnd(restoredPunchEnd);
       setBeatBars([1,2,4].includes(data.beatBars) ? data.beatBars : 4);
       setGridStart(Math.max(0,Math.min(180, Number(data.gridStart) || 0)));
       setSyncMode(['off','tape','grain'].includes(data.syncMode) ? data.syncMode : 'off');
@@ -847,7 +893,7 @@ export default function App() {
             <div className="brand-sub">THE INFINITE GROOVE MACHINE</div></div>
         </div>
         <div className="topbar-center"><span className="live-light" /> BROWSER AUDIO WORKSTATION
-          <span className="topbar-divider" /> V 0.6.0 <span className="beta-pill">ALPHA</span>
+          <span className="topbar-divider" /> V 0.7.0 <span className="beta-pill">ALPHA</span>
         </div>
         <a className="github-link" href="https://github.com/MichaelWave369/PhiBox" target="_blank" rel="noreferrer">
           SOURCE CODE <span aria-hidden="true">↗</span>
