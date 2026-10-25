@@ -17,7 +17,7 @@ test('exact-bar same-BPM overdub sums live input and old track',()=>{
   const mix=renderOverdub(old,incoming,{oldBpm:120,newBpm:120,originTime:0,startTime:0,gain:.5});
   assert.equal(mix.length,4);
   for(let i=0;i<4;i++)assert.ok(Math.abs(mix.pcm[0][i] - ((i+1)/10+.25))<1e-6);
-  assert.equal(old.getChannelData(0)[0],.1,'original must remain unmodified');
+  assert.ok(Math.abs(old.getChannelData(0)[0] - .1) < 1e-6,'original must remain unmodified');
 });
 test('phase offsets on subsequent bars and rates adapt when BPM changes',()=>{
   const old=buffer(Float32Array.from([0,.2,.4,.6]),null,4);
