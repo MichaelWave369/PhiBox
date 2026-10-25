@@ -459,9 +459,10 @@ export default function App() {
     if (!chopDeck) { setStatus('LOAD A BREAK TO PREVIEW'); return; }
     try {
       await ready();
-      if (!audio.chopSources.has(chopDeck.id)) {
-        const saved = (await getChopSources()).find(item => item.id === chopDeck.id);
-        if (saved) await audio.loadChopSource(saved.id, saved.file);
+      const info = await ensureChopSource(chopDeck.id);
+      if (!wavePeaks.length) {
+        setWavePeaks(info.peaks);
+        setChopSeconds(info.duration);
       }
       audio.playChop({
         sourceId: chopDeck.id,
