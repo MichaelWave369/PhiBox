@@ -37,6 +37,12 @@ Load your own break and view its waveform in the **Sample Chop Shop**. Edit sixt
 
 **[See the Chop Shop guide](docs/CHOP_SHOP.md)** for precise instructions, limits and local-storage/backup caveats. The JSON project export does **not** embed any audio files; bring your original breaks to other devices.
 
+## R4 / Break Intelligence
+
+**Smart transient slicing** detects nearby attacks and estimates source BPM; **Beat Grid** extracts one, two, or four bars at the selected sample BPM and offset; **Tempo Match** offers OFF (original sound), TAPE (tempo and pitch coupled), and experimental GRAIN (windowed overlap-add with approximate pitch preservation).
+
+Read the [R4 Break Intelligence guide](docs/BREAK_INTELLIGENCE.md) for instructions, assumptions, and experimental audio quality limits. R4 retains the original chopped-pad engine and migrates v1–v3 projects with sync OFF by default.
+
 ## Storage and privacy
 
 PhiBox stores pattern banks, FX and synth parameters in **localStorage**, and any imported sample audio blobs in **IndexedDB**. Samples are processed locally. No account, server or telemetry is required to play.
