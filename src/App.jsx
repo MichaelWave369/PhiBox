@@ -655,7 +655,7 @@ export default function App() {
             <div className="brand-sub">THE INFINITE GROOVE MACHINE</div></div>
         </div>
         <div className="topbar-center"><span className="live-light" /> BROWSER AUDIO WORKSTATION
-          <span className="topbar-divider" /> V 0.3.0 <span className="beta-pill">ALPHA</span>
+          <span className="topbar-divider" /> V 0.4.0 <span className="beta-pill">ALPHA</span>
         </div>
         <a className="github-link" href="https://github.com/MichaelWave369/PhiBox" target="_blank" rel="noreferrer">
           SOURCE CODE <span aria-hidden="true">↗</span>
@@ -821,7 +821,7 @@ export default function App() {
           <div className="chop-shop-head">
             <div>
               <span className="overline">07 / BREAK LABORATORY</span>
-              <h2>Φ Sample Chop Shop <span className="chop-tag">R3 · NON-DESTRUCTIVE</span></h2>
+              <h2>Φ Sample Chop Shop <span className="chop-tag">R4 · BREAK INTELLIGENCE</span></h2>
               <p>Bring a break. Find the pocket. Slice it into sixteen new instruments.</p>
             </div>
             <button type="button" className="chop-load-button"
@@ -836,6 +836,44 @@ export default function App() {
             <span className="chop-source-label"><i className={wavePeaks.length ? 'active' : ''} />
               {chopDeck ? chopDeck.name : 'NO AUDIO SOURCE LOADED'}</span>
             <span>{chopSeconds ? chopSeconds.toFixed(2) + ' SEC' : '-- SEC'} · 16 CHOPS · 1 SOURCE FILE</span>
+          </div>
+          <div className="break-intelligence-panel">
+            <div className="break-analyze-group">
+              <div>
+                <span className="overline">R4 / RHYTHM INTELLIGENCE</span>
+                <strong>Find the real hits</strong>
+                <small>Detect sharp attacks and estimate the source BPM. Nothing changes on the pads until you route again.</small>
+              </div>
+              <button type="button" disabled={!wavePeaks.length} onClick={analyzeBreak}>
+                ✳ SMART TRANSIENTS + BPM
+              </button>
+            </div>
+            <div className="break-grid-controls">
+              <label>SOURCE BPM
+                <input type="number" aria-label="Source sample BPM" min="65" max="190" step="1" value={sourceBpm}
+                  onChange={e => setSourceBpm(safeTempo(e.target.value,sourceBpm))}/>
+              </label>
+              <label>BARS
+                <select value={beatBars} aria-label="Number of source bars to slice"
+                  onChange={e => setBeatBars(Number(e.target.value))}>
+                  <option value="1">1 BAR</option><option value="2">2 BARS</option><option value="4">4 BARS</option>
+                </select>
+              </label>
+              <label>START OFFSET (SECONDS)
+                <input type="number" aria-label="Start offset into source in seconds" min="0"
+                  max={Math.max(0,chopSeconds-beatBars*4*60/sourceBpm).toFixed(2)}
+                  step="0.01" value={gridStart}
+                  onChange={e => setGridStart(Math.max(0,Math.min(chopSeconds,Number(e.target.value)||0)))}/>
+              </label>
+              <button type="button" disabled={!wavePeaks.length} className="grid-apply-button"
+                onClick={applyBeatGrid}>▦ SLICE ON BEAT GRID</button>
+            </div>
+            <div className="break-analysis-foot">
+              <span>{bpmEstimate ?
+                'DETECTED ' + bpmEstimate.bpm + ' BPM / CONFIDENCE ' + Math.round(bpmEstimate.confidence*100) + '%' :
+                'BPM ESTIMATE: NOT ANALYZED'}</span>
+              <span>BEAT GRID EXTRACTS AN ACTUAL BAR WINDOW FROM YOUR SOURCE</span>
+            </div>
           </div>
           <div className="chop-drop-zone" onDragOver={e => e.preventDefault()}
             onDrop={e => { e.preventDefault(); loadBreak(e.dataTransfer.files?.[0]); }}>
@@ -859,6 +897,25 @@ export default function App() {
               <span>{chopSeconds ? (chopMarkers[selectedSlice] * chopSeconds).toFixed(2) : '0.00'}s →
                 {chopSeconds ? (chopMarkers[selectedSlice + 1] * chopSeconds).toFixed(2) : '0.00'}s</span>
             </div>
+          </div>
+          <div className="tempo-match-deck">
+            <div>
+              <span className="overline">R4 / TEMPO MATCH</span>
+              <strong>Groove at the project tempo</strong>
+              <small>Source BPM {sourceBpm} → project BPM {bpm}.
+                OFF leaves existing chops untouched. TAPE changes speed and pitch.
+                GRAIN uses overlap-add for approximate pitch preservation and may sound textured.</small>
+            </div>
+            <div className="sync-mode-picker" role="group" aria-label="Chopped sample tempo matching mode">
+              {[['off','OFF'],['tape','TAPE'],['grain','GRAIN']].map(([value,label]) =>
+                <button type="button" key={value} onClick={()=>setSyncMode(value)}
+                  aria-pressed={syncMode===value} className={syncMode===value?'active':''}>{label}</button>)}
+            </div>
+            <span className="tempo-match-note">
+              {syncMode==='off' ? 'CLASSIC ORIGINAL PLAYBACK' :
+                syncMode==='tape' ? 'TEMPO LOCK: SPEED + PITCH SHIFT TOGETHER' :
+                  'GRAIN: WINDOWED OVERLAP-ADD, BEST ON SHORT RHYTHMIC CHOPS'}
+            </span>
           </div>
           <div className="chop-routing">
             <div className="chop-routing-copy">
