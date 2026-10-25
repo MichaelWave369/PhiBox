@@ -32,7 +32,8 @@ const factory = () => {
     bank: 0, bpm: 108, swing: 12, fx: { ...DEFAULT_FX }, synth: { ...DEFAULT_SYNTH },
     chain: [0, 1, 0, 2], songMode: false, quantize: '1/16', padVelocity: DEFAULT_VELOCITY,
     chopDeck: null, chopMarkers: equalMarkers(), flipChops: false,
-    sourceBpm: 120, beatBars: 4, gridStart: 0, syncMode: 'off', loops: LOOP_DEFAULTS(), loopBars: 1, overdubGain:.85
+    sourceBpm: 120, beatBars: 4, gridStart: 0, syncMode: 'off', loops: LOOP_DEFAULTS(), loopBars: 1, overdubGain:.85,
+    captureSource:'live', punchStart:4, punchEnd:8
   };
 };
 function loadProject() {
@@ -64,6 +65,9 @@ function loadProject() {
         syncMode: ['off','tape','grain'].includes(data.syncMode) ? data.syncMode : 'off',
         loops: normalizeLoops(data.loops), loopBars: [1,2,4].includes(data.loopBars) ? data.loopBars : 1,
         overdubGain:clamp(data.overdubGain ?? .85,0,1.5),
+        captureSource:data.captureSource==='input'?'input':'live',
+        punchStart:Number.isInteger(data.punchStart)&&data.punchStart>=0&&data.punchStart<16?data.punchStart:4,
+        punchEnd:Number.isInteger(data.punchEnd)&&data.punchEnd>0&&data.punchEnd<=16?data.punchEnd:8,
         quantize: ['1/16', '1/8', '1/4'].includes(data.quantize) ? data.quantize : '1/16',
         padVelocity: clamp(data.padVelocity ?? DEFAULT_VELOCITY, 0.05, 1),
         bpm: clamp(data.bpm, 40, 240), swing: clamp(data.swing, 0, 70),
@@ -183,6 +187,17 @@ export default function App() {
   const [loops, setLoops] = useState(initial.loops);
   const [loopBars, setLoopBars] = useState(initial.loopBars);
   const [captureState, setCaptureState] = useState(null);
+  const [captureSource,setCaptureSource] = useState(initial.captureSource);
+  const [punchStart,setPunchStart] = useState(initial.punchStart);
+  const [punchEnd,setPunchEnd] = useState(Math.max(initial.punchStart+1,initial.punchEnd));
+  const [inputEnabled,setInputEnabled] = useState(false);
+  const [inputName,setInputName] = useState('');
+  const [inputDevices,setInputDevices] = useState([]);
+  const [inputDeviceId,setInputDeviceId] = useState('');
+  const [inputGain,setInputGain] = useState(.85);
+  const [inputMonitor,setInputMonitor] = useState(false);
+  const [inputLevel,setInputLevel] = useState(0);
+  const [trackLevels,setTrackLevels] = useState([0,0,0,0]);
   const [overdubGain, setOverdubGain] = useState(initial.overdubGain);
   const [loopHistory, setLoopHistory] = useState(Array.from({length:4},()=>({undo:false,redo:false})));
   const [bpm, setBpm] = useState(initial.bpm);
@@ -233,19 +248,30 @@ export default function App() {
   useEffect(() => {
     localStorage.setItem(KEY, JSON.stringify({
       name, pads, banks, velocities, bank, bpm, swing, fx, synth, chain, songMode, quantize, padVelocity,
-      chopDeck, chopMarkers, flipChops, sourceBpm, beatBars, gridStart, syncMode, loops, loopBars, overdubGain
+      chopDeck, chopMarkers, flipChops, sourceBpm, beatBars, gridStart, syncMode, loops, loopBars, overdubGain,
+      captureSource,punchStart,punchEnd
     }));
   }, [name, pads, banks, velocities, bank, bpm, swing, fx, synth, chain, songMode, quantize,
-    padVelocity, chopDeck, chopMarkers, flipChops, sourceBpm, beatBars, gridStart, syncMode, loops, loopBars, overdubGain]);
+    padVelocity, chopDeck, chopMarkers, flipChops, sourceBpm, beatBars, gridStart, syncMode, loops, loopBars, overdubGain,
+    captureSource,punchStart,punchEnd]);
 
   useEffect(() => {
-    return () => { audio.stop(); audio.stopVocoder(); audio.stopChopPreview(); };
+    return () => { audio.stop(); audio.stopVocoder(); audio.stopChopPreview(); audio.disconnectInput(); };
   }, []);
 
   useEffect(() => { audio.setFX(fx); }, [fx]);
   useEffect(() => { audio.setSynth(synth); }, [synth]);
   useEffect(() => { audio.setTransport(bpm, swing); }, [bpm, swing]);
   useEffect(() => { audio.setChopSync(syncMode); }, [syncMode]);
+  useEffect(()=>{
+    const interval=setInterval(()=>{
+      if(!audio.ctx)return;
+      if(audio.micInput)setInputLevel(audio.readInputLevel());
+      setTrackLevels(audio.readLoopLevels());
+    },140);
+    return ()=>clearInterval(interval);
+  },[]);
+
 
   const ready = useCallback(async () => {
     await audio.ensure();
