@@ -420,6 +420,10 @@ export default function App() {
 
   const loadBreak = async file => {
     if (!file) return;
+    if (file.size > 20 * 1024 * 1024) {
+      setStatus('BREAK TOO LARGE / 20 MB MAX. TRIM OR COMPRESS IT FIRST.');
+      return;
+    }
     if (!file.type.startsWith('audio/') && !/\.(wav|mp3|ogg|flac|aif|aiff|m4a)$/i.test(file.name)) {
       setStatus('CHOOSE AN AUDIO FILE'); return;
     }
