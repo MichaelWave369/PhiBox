@@ -4,7 +4,7 @@ export const equalMarkers = () => Array.from({ length: CHOP_COUNT + 1 }, (_, i) 
 
 export function validMarkers(value) {
   if (!Array.isArray(value) || value.length !== CHOP_COUNT + 1 ||
-      value[0] !== 0 || value[CHOP_COUNT] !== 1) return false;
+      !(value[0] >= 0) || !(value[CHOP_COUNT] <= 1)) return false;
   return value.every((v, i) => typeof v === 'number' && Number.isFinite(v) &&
     v >= 0 && v <= 1 && (i === 0 || v - value[i - 1] >= 0.002));
 }
@@ -31,7 +31,11 @@ export function normalizeChop(raw) {
       typeof start !== 'number' || typeof end !== 'number' ||
       !Number.isFinite(start) || !Number.isFinite(end) ||
       start < 0 || end > 1 || end - start < 0.002) return null;
-  return { sourceId, start, end, reverse: raw.reverse === true };
+  return {
+    sourceId, start, end, reverse: raw.reverse === true,
+    ...(Number.isFinite(raw.sourceBpm) && raw.sourceBpm >= 65 && raw.sourceBpm <= 190
+      ? { sourceBpm: Math.round(raw.sourceBpm) } : {})
+  };
 }
 export function playbackWindow(chop, sourceDuration, tune = 0) {
   const region = normalizeChop(chop);
@@ -46,13 +50,15 @@ export function playbackWindow(chop, sourceDuration, tune = 0) {
   };
 }
 
-export function chopAssignments(id, markers, flipped = false) {
+export function chopAssignments(id, markers, flipped = false, sourceBpm = null) {
   const m = normalizeMarkers(markers);
   return Array.from({ length: CHOP_COUNT }, (_, i) => ({
     sourceId: id,
     start: m[flipped ? CHOP_COUNT - i - 1 : i],
     end: m[flipped ? CHOP_COUNT - i : i + 1],
-    reverse: false
+    reverse: false,
+    ...(Number.isFinite(sourceBpm) && sourceBpm >= 65 && sourceBpm <= 190 ?
+      { sourceBpm: Math.round(sourceBpm) } : {})
   }));
 }
 export async function sourceFingerprint(file) {
