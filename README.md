@@ -31,6 +31,12 @@ After merging the first pull request, set repository Settings → Pages → Buil
 
 **[Read the live-recording and arranger guide](docs/PERFORMANCE.md)**. The red record button on the transport still exports audio; REC PADS separately writes pattern events.
 
+## R3 / Φ Sample Chop Shop
+
+Load your own break and view its waveform in the **Sample Chop Shop**. Edit sixteen slice boundaries by dragging their markers, audition regions forward or reversed, and route all sixteen cuts onto the pad matrix. You can then play, sequence, and overdub the chopped audio, adjust any pad's pitch (±12 semitones), reverse pads individually, and send the output through the existing effects rack. The original files are retained once per SHA-256 in local IndexedDB, and the project file stores the slice assignments.
+
+**[See the Chop Shop guide](docs/CHOP_SHOP.md)** for precise instructions, limits and local-storage/backup caveats. The JSON project export does **not** embed any audio files; bring your original breaks to other devices.
+
 ## Storage and privacy
 
 PhiBox stores pattern banks, FX and synth parameters in **localStorage**, and any imported sample audio blobs in **IndexedDB**. Samples are processed locally. No account, server or telemetry is required to play.
