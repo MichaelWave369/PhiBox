@@ -23,7 +23,7 @@ test('malformed imported JSON cannot inject foreign patches or unsafe notes',()=
  assert.equal(result.layers[0].transpose,24);
  assert.deepEqual(result.favorites,['hero']);
  assert.deepEqual(result.sequence,Array(16).fill(null));
- assert.equal(result.note,96);assert.equal(result.gate,1);
+ assert.equal(result.note,108);assert.equal(result.gate,1);
 });
 test('chip sequencer allows toggles and preserves independent step cells',()=>{
  let steps=makeInstrument().sequence;

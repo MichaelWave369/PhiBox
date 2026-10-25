@@ -401,7 +401,8 @@ class PhiAudioEngine {
     const safe=sanitizeInstrument(next);
     const current=this.instrumentRack;
     const isDifferent=current.mode!==safe.mode || current.presetId!==safe.presetId ||
-      current.family!==safe.family || JSON.stringify(current.layers)!==JSON.stringify(safe.layers);
+      current.family!==safe.family || JSON.stringify(current.layers)!==JSON.stringify(safe.layers) ||
+      current.duty!==safe.duty || JSON.stringify(current.custom)!==JSON.stringify(safe.custom);
     if(isDifferent)for(const note of [...this.voices.keys()])this.noteOff(note);
     this.instrumentRack=safe;
   }
@@ -410,18 +411,23 @@ class PhiAudioEngine {
   // PhiBox dry instrument bus, meaning they enter the mixer, recorder and FX.
   playChipVoice(note,when,velocity=.86,rack=this.instrumentRack) {
     const time=Math.max(this.ctx.currentTime,when);
-    const midi=Math.max(36,Math.min(96,Math.round(note)));
+    const midi=Math.max(24,Math.min(108,Math.round(note)));
     if(rack.family==='double') {
-      return chippyCreateLayerVoice(this.ctx,this.input,midi,rack.layers,time,velocity);
+      const layers=rack.layers.map(layer=>({
+        ...layer,...(rack.custom?.[layer.presetId]||{})
+      }));
+      return chippyCreateLayerVoice(this.ctx,this.input,midi,layers,time,velocity);
     }
     const preset=CHIPPY_PRESETS.find(p=>p.id===rack.presetId &&
       (p.chip||'nes')===rack.family);
     if(!preset)throw new Error('ChippyDip patch missing. Pick a valid factory preset.');
-    return chippyCreateVoice(this.ctx,this.input,midi,preset,time,velocity);
+    const edit=rack.custom?.[rack.presetId]||{};
+    return chippyCreateVoice(this.ctx,this.input,midi,preset,time,velocity,
+      rack.duty,edit.table,edit.fm,edit.sample);
   }
 
   triggerInstrumentStep(note,velocity,when,rack) {
-    if(rack?.mode!=='chip'||!Number.isInteger(note)||note<36||note>96)return;
+    if(rack?.mode!=='chip'||!Number.isInteger(note)||note<24||note>108)return;
     const stop=this.playChipVoice(note,when,velocity,rack);
     const seconds=(60/this.bpm/4)*rack.gate;
     stop(when+seconds);
