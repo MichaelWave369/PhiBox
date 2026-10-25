@@ -577,7 +577,7 @@ export default function App() {
             <div className="brand-sub">THE INFINITE GROOVE MACHINE</div></div>
         </div>
         <div className="topbar-center"><span className="live-light" /> BROWSER AUDIO WORKSTATION
-          <span className="topbar-divider" /> V 0.1.0 <span className="beta-pill">ALPHA</span>
+          <span className="topbar-divider" /> V 0.3.0 <span className="beta-pill">ALPHA</span>
         </div>
         <a className="github-link" href="https://github.com/MichaelWave369/PhiBox" target="_blank" rel="noreferrer">
           SOURCE CODE <span aria-hidden="true">↗</span>
@@ -736,6 +736,73 @@ export default function App() {
               onClick={() => setChain(old => [...old, old.at(-1) ?? 0])}>+ ADD BAR</button>
               <button type="button" disabled={chain.length <= 1}
                 onClick={() => setChain(old => old.slice(0, -1))}>− REMOVE BAR</button></div>
+          </div>
+        </section>
+
+        <section className="panel chop-shop-panel">
+          <div className="chop-shop-head">
+            <div>
+              <span className="overline">07 / BREAK LABORATORY</span>
+              <h2>Φ Sample Chop Shop <span className="chop-tag">R3 · NON-DESTRUCTIVE</span></h2>
+              <p>Bring a break. Find the pocket. Slice it into sixteen new instruments.</p>
+            </div>
+            <button type="button" className="chop-load-button"
+              onClick={() => chopFileRef.current?.click()}>
+              <Icon name="upload" size={16} /> LOAD A BREAK
+            </button>
+            <input hidden ref={chopFileRef} type="file"
+              accept="audio/*,.wav,.mp3,.flac,.aif,.aiff,.m4a,.ogg"
+              onChange={e => { loadBreak(e.target.files?.[0]); e.target.value = ''; }} />
+          </div>
+          <div className="chop-meta-row">
+            <span className="chop-source-label"><i className={wavePeaks.length ? 'active' : ''} />
+              {chopDeck ? chopDeck.name : 'NO AUDIO SOURCE LOADED'}</span>
+            <span>{chopSeconds ? chopSeconds.toFixed(2) + ' SEC' : '-- SEC'} · 16 CHOPS · 1 SOURCE FILE</span>
+          </div>
+          <div className="chop-drop-zone" onDragOver={e => e.preventDefault()}
+            onDrop={e => { e.preventDefault(); loadBreak(e.dataTransfer.files?.[0]); }}>
+            <ChopWaveform peaks={wavePeaks} markers={chopMarkers}
+              selected={selectedSlice} onSelect={setSelectedSlice}
+              onMove={(index, fraction) => setChopMarkers(old => moveMarker(old, index, fraction))} />
+          </div>
+          <div className="chop-controls">
+            <div className="chop-preview-actions">
+              <button type="button" className="chop-preview" onClick={previewSlice}
+                disabled={!chopDeck}><Icon name="play" size={16} /> PREVIEW {String(selectedSlice + 1).padStart(2, '0')}</button>
+              <button type="button" className="chop-plain-button"
+                onClick={() => audio.stopChopPreview()}>STOP PREVIEW</button>
+              <button type="button" className={'chop-plain-button ' + (reversePreview ? 'selected' : '')}
+                aria-pressed={reversePreview} onClick={() => setReversePreview(v => !v)}>
+                {reversePreview ? '↶ REVERSE PREVIEW ON' : '↶ REVERSE PREVIEW'}
+              </button>
+            </div>
+            <div className="chop-slice-info">
+              <strong>SLICE {String(selectedSlice + 1).padStart(2, '0')}</strong>
+              <span>{chopSeconds ? (chopMarkers[selectedSlice] * chopSeconds).toFixed(2) : '0.00'}s →
+                {chopSeconds ? (chopMarkers[selectedSlice + 1] * chopSeconds).toFixed(2) : '0.00'}s</span>
+            </div>
+          </div>
+          <div className="chop-routing">
+            <div className="chop-routing-copy">
+              <strong>ROUTE TO PAD MATRIX</strong>
+              <span>Move marker lines to reshape slices. Routing replaces the pad sound, not its saved source sample.</span>
+            </div>
+            <div className="chop-route-buttons">
+              <button type="button" className={'chop-plain-button ' + (flipChops ? 'selected' : '')}
+                onClick={() => setFlipChops(v => !v)} aria-pressed={flipChops}>
+                {flipChops ? 'ORDER: 16 → 01' : 'ORDER: 01 → 16'}
+              </button>
+              <button type="button" className="chop-route-main" onClick={mapChopsToPads}
+                disabled={!chopDeck || !wavePeaks.length}>CHOP → 16 PADS <span>↗</span></button>
+            </div>
+          </div>
+          <div className="chop-help">
+            <span>DRAG A LINE TO MOVE A SLICE BOUNDARY · CLICK A REGION OR NUMBER TO PREVIEW</span>
+            <span>AFTER EDITING, ROUTE AGAIN TO UPDATE THE PADS · EACH PAD HAS TUNE + REVERSE</span>
+          </div>
+          <div className="chop-warning">
+            SOURCE AUDIO IS SAVED LOCALLY IN THIS BROWSER, NOT INSIDE PROJECT JSON.
+            KEEP THE ORIGINAL FILE FOR MOVING TO ANOTHER MACHINE.
           </div>
         </section>
 
