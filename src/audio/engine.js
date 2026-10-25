@@ -1,10 +1,14 @@
 import { midiToHz, clamp } from './patterns.js';
 import { chooseCaptureStep, DEFAULT_VELOCITY } from './performance.js';
+import { audioPeaks, normalizeChop } from './chops.js';
 
 class PhiAudioEngine {
   constructor() {
     this.ctx = null;
     this.samples = new Map();
+    this.chopSources = new Map();
+    this.reverseSources = new Map();
+    this.previewVoice = null;
     this.voices = new Map();
     this.playing = false;
     this.currentStep = 0;
@@ -207,6 +211,73 @@ class PhiAudioEngine {
     }
   }
 
+  async loadChopSource(id, file) {
+    await this.ensure();
+    if (this.chopSources.has(id)) return this.getChopInfo(id);
+    if (!file || file.size > 20 * 1024 * 1024) throw new Error('Use a break under 20 MB.');
+    const buffer = await this.ctx.decodeAudioData(await file.arrayBuffer());
+    if (buffer.duration > 180) throw new Error('Breaks must be under 3 minutes. Trim longer files first.');
+    if (!buffer.length) throw new Error('Audio file was empty.');
+    this.chopSources.set(id, buffer);
+    return this.getChopInfo(id);
+  }
+
+  getChopInfo(id) {
+    const buffer = this.chopSources.get(id);
+    return buffer ? { duration: buffer.duration, peaks: audioPeaks(buffer) } : null;
+  }
+
+  getReversedSource(id) {
+    if (this.reverseSources.has(id)) return this.reverseSources.get(id);
+    const forward = this.chopSources.get(id);
+    if (!forward) return null;
+    const reversed = this.ctx.createBuffer(forward.numberOfChannels, forward.length, forward.sampleRate);
+    for (let channel = 0; channel < forward.numberOfChannels; channel++) {
+      const original = forward.getChannelData(channel);
+      const target = reversed.getChannelData(channel);
+      for (let index = 0; index < original.length; index++) target[index] = original[original.length - 1 - index];
+    }
+    this.reverseSources.set(id, reversed);
+    return reversed;
+  }
+
+  playChop(chop, velocity = 0.86, tune = 0, when, preview = false) {
+    const range = normalizeChop(chop);
+    if (!range) throw new Error('Invalid chop region. Please slice the sample again.');
+    const forward = this.chopSources.get(range.sourceId);
+    if (!forward) throw new Error('Chop source unavailable. Reload the break in Chop Shop.');
+    const reversed = range.reverse ? this.getReversedSource(range.sourceId) : forward;
+    const start = (range.reverse ? 1 - range.end : range.start) * forward.duration;
+    const duration = Math.max(0.001, (range.end - range.start) * forward.duration);
+    const rate = Math.pow(2, clamp(tune, -12, 12) / 12);
+    const time = Math.max(this.ctx.currentTime, when ?? this.ctx.currentTime);
+    const audibleSeconds = duration / rate;
+    const fade = Math.min(0.006, audibleSeconds / 4);
+    const source = this.ctx.createBufferSource();
+    const gain = this.ctx.createGain();
+    source.buffer = reversed;
+    source.playbackRate.value = rate;
+    gain.gain.setValueAtTime(0.0001, time);
+    gain.gain.linearRampToValueAtTime(clamp(velocity, 0.05, 1) * 0.8, time + fade);
+    gain.gain.setValueAtTime(clamp(velocity, 0.05, 1) * 0.8, time + Math.max(fade, audibleSeconds - fade));
+    gain.gain.linearRampToValueAtTime(0.0001, time + audibleSeconds);
+    source.connect(gain).connect(this.input);
+    source.start(time, start, duration);
+    source.stop(time + audibleSeconds + 0.025);
+    if (preview) {
+      this.stopChopPreview();
+      this.previewVoice = source;
+      source.onended = () => { if (this.previewVoice === source) this.previewVoice = null; };
+    }
+    return source;
+  }
+
+  stopChopPreview() {
+    if (!this.previewVoice) return;
+    try { this.previewVoice.stop(); } catch { /* Preview already ended. */ }
+    this.previewVoice = null;
+  }
+
   async loadSample(index, file) {
     const ctx = await this.ensure();
     if (!file || file.size > 20 * 1024 * 1024) throw new Error('Use an audio file under 20 MB.');
@@ -222,6 +293,10 @@ class PhiAudioEngine {
   async trigger(index, pad, velocity = 0.85, when) {
     await this.ensure();
     const time = Math.max(this.ctx.currentTime, when ?? this.ctx.currentTime);
+    if (pad.chop) {
+      this.playChop(pad.chop, velocity, Number(pad.tune) || 0, time);
+      return;
+    }
     const sample = this.samples.get(index);
     if (sample) {
       const src = this.ctx.createBufferSource();
