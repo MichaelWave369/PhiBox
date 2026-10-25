@@ -73,6 +73,14 @@ The new **ΦFLEX** preset synthesizer uses the real, MIT-licensed [ChippyDip](ht
 
 [Read the full R8 integration and usage guide](docs/PHIFLEX_CHIPPYDIP.md), including original-source attribution and patch persistence details. The PhiBox browser app is not a VST3 plugin.
 
+## R9 / ChippyDip ↔ ΦFLEX Patch Portal
+
+The **Patch Portal** now imports actual **ChippyDip pattern JSON versions 1–5** and exports a compatible **version 5** pattern file. Custom Game Boy 32-cell waveforms, Genesis FM operators/algorithms, SNES-style sample settings and NES pulse duty can be edited and played inside PhiBox. DOUBLE DIP layer patches preserve their custom data, and PhiBox retains those edits in its project JSON (v9).
+
+Importing changes the active ΦFLEX instrument, melodic pitch lane and tempo, **not the drum machine's patterns or saved audio**. Imported/exported pattern files contain settings, not sample PCM. Older PhiBox projects are still supported. The full ChippyDip lab remains the source of richer instrument editing and separate native/VST3 work.
+
+[Read the Patch Portal compatibility guide](docs/PATCH_PORTAL.md) for exact limits and transfer steps.
+
 ## Storage and privacy
 
 PhiBox stores pattern banks, FX and synth parameters in **localStorage**, and any imported sample audio blobs in **IndexedDB**. Samples are processed locally. No account, server or telemetry is required to play.
