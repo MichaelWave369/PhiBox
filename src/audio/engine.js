@@ -1,4 +1,5 @@
 import { midiToHz, clamp } from './patterns.js';
+import { chooseCaptureStep, DEFAULT_VELOCITY } from './performance.js';
 
 class PhiAudioEngine {
   constructor() {
@@ -14,6 +15,9 @@ class PhiAudioEngine {
     this.vocoder = null;
     this.recording = false;
     this.stepTimeouts = [];
+    this.stepTimeline = [];
+    this.sequenceIndex = 0;
+    this.arrangement = {};
   }
 
   async ensure() {
@@ -266,36 +270,74 @@ class PhiAudioEngine {
     this.voices.delete(note);
   }
 
-  start(patternGetter, bpm, swing, onStep) {
+  start(patternGetter, bpm, swing, onStep, options = {}) {
     if (!this.ctx) throw new Error('Unlock audio before starting transport.');
     this.stop();
     this.bpm = clamp(bpm, 40, 240);
     this.swing = clamp(swing, 0, 70);
+    this.arrangement = options;
     this.playing = true;
     this.currentStep = 0;
+    this.sequenceIndex = 0;
+    this.stepTimeline = [];
     this.nextNoteTime = this.ctx.currentTime + 0.06;
     const tick = () => {
       while (this.playing && this.nextNoteTime < this.ctx.currentTime + 0.13) {
-        const step = this.currentStep;
+        const index = this.sequenceIndex;
+        const step = index % 16;
+        const bank = this.resolveBank(index);
         const scheduledAt = this.nextNoteTime;
-        const pattern = patternGetter();
+        const pattern = patternGetter(bank);
         if (pattern) {
           for (let i = 0; i < 16; i++) {
             if (pattern.steps[i]?.[step]) {
-              this.trigger(i, pattern.pads[i], i === 2 ? 0.72 : 0.9, scheduledAt).catch(console.error);
+              const level = pattern.velocities?.[i]?.[step];
+              const velocity = typeof level === 'number' && level > 0 ? level : DEFAULT_VELOCITY;
+              this.trigger(i, pattern.pads[i], velocity, scheduledAt).catch(console.error);
             }
           }
         }
-        const timeout = setTimeout(() => onStep(step), Math.max(0, (scheduledAt - this.ctx.currentTime) * 1000));
+        this.stepTimeline.push({ index, step, bank, time: scheduledAt });
+        this.stepTimeline = this.stepTimeline.filter(event => event.time > this.ctx.currentTime - 5);
+        const timeout = setTimeout(() => {
+          if (this.playing) onStep(step, bank, index);
+        }, Math.max(0, (scheduledAt - this.ctx.currentTime) * 1000));
         this.stepTimeouts.push(timeout);
         if (this.stepTimeouts.length > 64) this.stepTimeouts.shift();
         const base = 60 / this.bpm / 4;
         this.nextNoteTime += base * (step % 2 === 0 ? (1 + this.swing / 200) : (1 - this.swing / 200));
-        this.currentStep = (step + 1) % 16;
+        this.sequenceIndex += 1;
+        this.currentStep = this.sequenceIndex % 16;
       }
     };
     tick();
     this.timer = setInterval(tick, 25);
+  }
+
+  resolveBank(index) {
+    const chain = this.arrangement.getChain?.();
+    if (Array.isArray(chain) && chain.length) {
+      return chain[Math.floor(index / 16) % chain.length] ?? 0;
+    }
+    return this.arrangement.getBank?.() ?? 0;
+  }
+
+  // Capture from the AudioContext clock, not from React's visual playhead.
+  // Project unscheduled future grid cells for accurate 1/8 and 1/4 capture near bar boundaries.
+  getCaptureCell(division = '1/16') {
+    if (!this.playing || !this.ctx || !this.stepTimeline.length) return null;
+    const now = this.ctx.currentTime;
+    const events = this.stepTimeline.filter(event => event.time >= now - 2.5);
+    let last = events.at(-1) || this.stepTimeline.at(-1);
+    const duration = 60 / this.bpm / 4;
+    for (let i = 0; i < 20; i++) {
+      const nextIndex = last.index + 1;
+      const nextTime = last.time + duration * (last.step % 2 === 0 ?
+        (1 + this.swing / 200) : (1 - this.swing / 200));
+      last = { index: nextIndex, step: nextIndex % 16, bank: this.resolveBank(nextIndex), time: nextTime };
+      events.push(last);
+    }
+    return chooseCaptureStep(events, now, division);
   }
 
   setTransport(bpm, swing) {
@@ -309,6 +351,8 @@ class PhiAudioEngine {
     this.timer = null;
     this.stepTimeouts.forEach(clearTimeout);
     this.stepTimeouts = [];
+    this.stepTimeline = [];
+    this.sequenceIndex = 0;
   }
 
   async startVocoder() {
