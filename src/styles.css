@@ -314,3 +314,34 @@
 @media(max-width:800px){.loop-forge-panel{padding:17px}.forge-track{padding:12px}.forge-header h2{font-size:23px}}
 @media(max-width:540px){.forge-tracks{grid-template-columns:1fr}.forge-resample button{width:100%}.forge-transport>span{width:100%}.forge-header h2 .forge-flag{display:inline-block;margin-top:7px}}
 @media(prefers-reduced-motion:reduce){.forge-meter.active i{animation:none}}
+
+
+/* PhiBox R6 / non-destructive overdub performer controls */
+.forge-overdub-level {
+  display:inline-flex;align-items:center;flex-wrap:wrap;gap:10px;
+  color:#e4c4d2;font:10px 'DM Mono',monospace;
+  border:1px solid #714c65;border-radius:7px;background:#382638;padding:9px 12px;
+}
+.forge-overdub-level input {width:100px;accent-color:#eea3c5}
+.forge-overdub-level input:disabled {opacity:.5}
+.forge-overdub-level b {min-width:38px;color:#ffcfab;font-size:10px;text-align:right}
+.forge-track-actions button.forge-overdub-button {
+  display:inline-flex;align-items:center;gap:5px;
+  border-color:#c39cc8;color:#f2d2fa;background:linear-gradient(115deg,#67416d,#473852);
+  font-weight:700;flex-grow:1;
+}
+.forge-track-actions button.forge-export-button {
+  display:inline-flex;align-items:center;gap:4px;
+  border-color:#6a836c;color:#bee5bd;background:#2c4137;
+}
+.forge-track-actions button.forge-undo-button {
+  border-color:#786276;color:#d4bdcc;background:#362938;
+}
+.forge-track.has-take .forge-track-actions button:not(:disabled):focus-visible {
+  outline:2px solid #ffd296;outline-offset:2px;
+}
+.forge-track-actions {align-content:start}
+@media(max-width:800px){
+  .forge-overdub-level {width:100%}
+  .forge-overdub-level input {flex:1;min-width:55px}
+}
