@@ -365,6 +365,7 @@ export default function App() {
 
   const stopTransport = () => {
     audio.stop();
+    setCaptureState(null);
     setPlaying(false);
     setArmed(false);
     armedRef.current = false;
@@ -568,6 +569,90 @@ export default function App() {
     setStatus('CHOP REMOVED / PREVIOUS PAD SAMPLE OR SYNTH RESTORED');
   };
 
+
+  const changeLoopSettings = (index, update) => {
+    setLoops(old=>old.map((track,i)=>i===index?{...track,...update}:track));
+    if (audio.ctx) audio.setLoopTrack(index,{...loopsRef.current[index],...update});
+  };
+
+  const captureLoop = async index => {
+    try {
+      if (audio.captureJob) { setStatus('FINISH OR CANCEL THE CURRENT RECORDING FIRST'); return; }
+      if (!audio.playing) await startTransport();
+      const requestedBars=loopBars;
+      setCaptureState({source:'live',track:index,stage:'preparing'});
+      await audio.armLoopCapture({
+        source:'live',track:index,bars:requestedBars,
+        onState:stage=>setCaptureState({source:'live',track:index,stage}),
+        onDone:async(buffer,info)=>{
+          setCaptureState(null);
+          setLoops(old=>old.map((track,i)=>i===index?{
+            ...track,hasAudio:true,bpm:info.bpm,bars:info.bars
+          }:track));
+          setStatus('LOOP '+(index+1)+' CAPTURED / '+info.bars+' BAR(S) / PLAYING');
+          try {
+            await saveLoopTake(index,info.bpm,info.bars,buffer.sampleRate,
+              buffer.getChannelData(0).slice(),buffer.getChannelData(1).slice());
+          } catch(error) {
+            setStatus('LOOP IS PLAYING IN MEMORY, BUT COULD NOT BE SAVED: '+error.message);
+          }
+        },
+        onError:error=>{setCaptureState(null);setStatus(error.message||'LOOP CAPTURE FAILED');}
+      });
+    } catch(error) {setCaptureState(null);setStatus(error.message||'COULD NOT ARM LOOP');}
+  };
+
+  const captureMaster = async () => {
+    try {
+      if (audio.captureJob) { setStatus('FINISH OR CANCEL THE CURRENT RECORDING FIRST'); return; }
+      if (!audio.playing) await startTransport();
+      const requestedBars=loopBars;
+      setCaptureState({source:'master',track:null,stage:'preparing'});
+      await audio.armLoopCapture({
+        source:'master',bars:requestedBars,
+        onState:stage=>setCaptureState({source:'master',track:null,stage}),
+        onDone:async(buffer,info)=>{
+          setCaptureState({source:'master',track:null,stage:'processing'});
+          try {
+            const wav=encodeWav(buffer);
+            const filename='PhiBox-Resample-'+info.bars+'bar-'+info.bpm+'bpm.wav';
+            const file=new File([wav],filename,{type:'audio/wav'});
+            const id=await sourceFingerprint(file);
+            const sourceInfo=await audio.loadChopSource(id,file);
+            setChopDeck({id,name:filename});
+            setWavePeaks(sourceInfo.peaks);
+            setChopSeconds(sourceInfo.duration);
+            setChopMarkers(equalMarkers());
+            setSourceBpm(info.bpm);
+            setGridStart(0);
+            setSelectedSlice(0);
+            setBpmEstimate(null);
+            setStatus('MASTER RESAMPLED INTO CHOP SHOP / '+info.bars+' BAR(S) / ROUTE TO PADS WHEN READY');
+            try { await saveChopSource(id,filename,file); }
+            catch {setStatus('RESAMPLE READY IN MEMORY, BUT NOT SAVED. EXPORT A BACKUP BEFORE CLOSING.');}
+          } catch(error) {setStatus(error.message||'MASTER RESAMPLING FAILED');}
+          finally {setCaptureState(null);}
+        },
+        onError:error=>{setCaptureState(null);setStatus(error.message||'RESAMPLE CANCELLED');}
+      });
+    } catch(error){setCaptureState(null);setStatus(error.message||'COULD NOT ARM RESAMPLE');}
+  };
+
+  const clearLoopTrack = async index => {
+    if(audio.captureJob) {setStatus('CANCEL THE ACTIVE CAPTURE BEFORE CLEARING A TRACK');return;}
+    audio.removeLoopTrack(index);
+    setLoops(old=>old.map((track,i)=>i===index?{...track,hasAudio:false}:track));
+    try {await deleteLoopTake(index);setStatus('LOOP '+(index+1)+' CLEARED');}
+    catch(error){setStatus('LOOP CLEARED FROM MEMORY, BUT LOCAL STORAGE FAILED: '+error.message);}
+  };
+
+  const updatePadFX = (key,value) => {
+    const index=selected;
+    const next=safePadFx({...pads[index].padFx,[key]:value});
+    setPads(old=>old.map((pad,i)=>i===index?{...pad,padFx:next}:pad));
+    if(audio.ctx)audio.getPadDestination(index,next);
+  };
+
   const onExport = () => {
     const project = { version: 5, name, pads, banks, velocities, bank, bpm, swing, fx, synth, chain, songMode, quantize, padVelocity,
       chopDeck, chopMarkers, flipChops, sourceBpm, beatBars, gridStart, syncMode,
@@ -691,7 +776,7 @@ export default function App() {
             <div className="brand-sub">THE INFINITE GROOVE MACHINE</div></div>
         </div>
         <div className="topbar-center"><span className="live-light" /> BROWSER AUDIO WORKSTATION
-          <span className="topbar-divider" /> V 0.4.0 <span className="beta-pill">ALPHA</span>
+          <span className="topbar-divider" /> V 0.5.0 <span className="beta-pill">ALPHA</span>
         </div>
         <a className="github-link" href="https://github.com/MichaelWave369/PhiBox" target="_blank" rel="noreferrer">
           SOURCE CODE <span aria-hidden="true">↗</span>
@@ -721,7 +806,7 @@ export default function App() {
               <Icon name="record" /></button>
           </div>
           <label className="tempo-block"><span className="overline">TEMPO / BPM</span>
-            <div className="tempo-number"><input type="number" min="40" max="240" value={bpm} onChange={e => setBpm(clamp(e.target.value, 40, 240))} /><span>BPM</span></div></label>
+            <div className="tempo-number"><input type="number" min="40" max="240" value={bpm} disabled={!!captureState} title={captureState ? "Tempo locked during capture" : "Transport tempo"} onChange={e => setBpm(clamp(e.target.value, 40, 240))} /><span>BPM</span></div></label>
           <label className="swing-block"><span className="overline">SWING</span>
             <div className="inline-range"><input aria-label="Swing amount" type="range" min="0" max="70" value={swing} onChange={e => setSwing(Number(e.target.value))} /><strong>{swing}%</strong></div></label>
           <div className="transport-right"><div className="sync-led"><i className={playing ? 'on' : ''} /> {armed ? 'OVERDUB' : playing ? 'PLAYING' : 'READY'}</div>
