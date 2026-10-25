@@ -1,4 +1,4 @@
-import {CHIP_PATCHES} from './instrument-state.js';
+import {CHIP_PATCHES} from './chip-catalog.js';
 const IDS=Object.values(CHIP_PATCHES).flat();
 const DUTIES=[.125,.25,.5,.75];
 const bounded=(x,a,b)=>typeof x==='number'&&Number.isFinite(x)&&x>=a&&x<=b;
