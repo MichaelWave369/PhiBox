@@ -3,6 +3,7 @@ import { chooseCaptureStep, DEFAULT_VELOCITY } from './performance.js';
 import { audioPeaks, playbackWindow } from './chops.js';
 import { onsetEnvelope, estimatedTempo, smartTransientMarkers, tempoFactor, grainTimeline } from './break-intelligence.js';
 import { barFrames, nextBarTime } from './loop-utils.js';
+import { renderOverdub, toAudioBuffer } from './overdub.js';
 
 class PhiAudioEngine {
   constructor() {
@@ -28,6 +29,8 @@ class PhiAudioEngine {
     this.sequenceIndex = 0;
     this.arrangement = {};
     this.loopBuffers = new Map();
+    this.loopUndo = new Map();
+    this.loopRedo = new Map();
     this.loopSources = new Map();
     this.loopMix = new Map();
     this.padMix = new Map();
@@ -152,20 +155,41 @@ class PhiAudioEngine {
         const left=new Float32Array(message.left), right=new Float32Array(message.right);
         const buffer=this.ctx.createBuffer(2,left.length,this.ctx.sampleRate);
         buffer.copyToChannel(left,0); buffer.copyToChannel(right,1);
+        let completed=buffer;
         if(job.source==='live') {
-          this.setLoopBuffer(job.track,buffer,job.bpm,job.bars);
+          const previous=this.loopBuffers.get(job.track)||null;
+          if(job.overdub) {
+            if(!previous)throw new Error('The original loop disappeared before overdubbing.');
+            const mixed=renderOverdub(previous.buffer,buffer,{
+              oldBpm:previous.bpm,newBpm:job.bpm,
+              originTime:job.originTime,startTime:job.startTime,gain:job.overdubGain
+            });
+            completed=toAudioBuffer(this.ctx,mixed);
+          }
+          this.loopUndo.set(job.track,previous);
+          this.loopRedo.delete(job.track);
+          this.setLoopBuffer(job.track,completed,job.bpm,job.bars);
           if(this.playing)this.playLoopTrack(job.track);
         }
-        job.onDone?.(buffer,{track:job.track,bpm:job.bpm,bars:job.bars,source:job.source});
+        job.onDone?.(completed,{
+          track:job.track,bpm:job.bpm,bars:job.bars,source:job.source,overdub:job.overdub===true
+        });
       } catch(error) {job.onError?.(error);}
     }
   }
 
-  async armLoopCapture({ track=null, bars=1, source='live', onState, onDone, onError }) {
+  async armLoopCapture({ track=null, bars=1, source='live', overdub=false, overdubGain=.85, onState, onDone, onError }) {
     if (!this.playing || !this.ctx) throw new Error('Start the transport before recording a loop.');
     if(this.captureJob) throw new Error('Another loop capture is already armed or recording.');
     if(source==='live' && (!Number.isInteger(track)||track<0||track>=4))throw new Error('Choose a loop track 1–4.');
     if(source!=='live'&&source!=='master')throw new Error('Invalid recording source.');
+    if(overdub) {
+      if(source!=='live'||!this.loopBuffers.has(track))
+        throw new Error('Overdub requires an existing loop on the selected track.');
+      if(!Number.isFinite(overdubGain)||overdubGain<0||overdubGain>1.5)
+        throw new Error('Invalid overdub gain.');
+      bars=this.loopBuffers.get(track).bars;
+    }
     await this.prepareCapture();
     if(!this.playing)throw new Error('Transport stopped before capture could arm.');
     const bpm=this.bpm;
@@ -173,7 +197,7 @@ class PhiAudioEngine {
     if(!frames)throw new Error('This loop duration is unsupported.');
     const at=nextBarTime(this.ctx.currentTime,this.transportOrigin,bpm,.18);
     const id=++this.captureId;
-    this.captureJob={id,track,bpm,bars,source,onState,onDone,onError};
+    this.captureJob={id,track,bpm,bars,source,overdub,overdubGain,onState,onDone,onError,startTime:at,originTime:this.transportOrigin};
     this.captureNode.port.postMessage({
       type:'arm',id,startFrame:Math.round(at*this.ctx.sampleRate),frames,source
     });
@@ -243,6 +267,27 @@ class PhiAudioEngine {
   removeLoopTrack(index) {
     this.stopLoopTrack(index);
     this.loopBuffers.delete(index);
+    this.loopUndo.delete(index);
+    this.loopRedo.delete(index);
+  }
+
+  canUndoLoop(index) { return this.loopUndo.has(index); }
+  canRedoLoop(index) { return this.loopRedo.has(index); }
+
+  restoreLoopVersion(index, direction='undo') {
+    const from=direction==='redo'?this.loopRedo:this.loopUndo;
+    const to=direction==='redo'?this.loopUndo:this.loopRedo;
+    if(!from.has(index))return undefined;
+    const snapshot=from.get(index);
+    const current=this.loopBuffers.get(index)||null;
+    from.delete(index);
+    to.set(index,current);
+    this.stopLoopTrack(index);
+    if(snapshot) {
+      this.setLoopBuffer(index,snapshot.buffer,snapshot.bpm,snapshot.bars);
+      if(this.playing)this.playLoopTrack(index);
+    } else this.loopBuffers.delete(index);
+    return snapshot;
   }
 
   retimeLoops() {

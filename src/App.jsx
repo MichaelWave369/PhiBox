@@ -32,7 +32,7 @@ const factory = () => {
     bank: 0, bpm: 108, swing: 12, fx: { ...DEFAULT_FX }, synth: { ...DEFAULT_SYNTH },
     chain: [0, 1, 0, 2], songMode: false, quantize: '1/16', padVelocity: DEFAULT_VELOCITY,
     chopDeck: null, chopMarkers: equalMarkers(), flipChops: false,
-    sourceBpm: 120, beatBars: 4, gridStart: 0, syncMode: 'off', loops: LOOP_DEFAULTS(), loopBars: 1
+    sourceBpm: 120, beatBars: 4, gridStart: 0, syncMode: 'off', loops: LOOP_DEFAULTS(), loopBars: 1, overdubGain:.85
   };
 };
 function loadProject() {
@@ -63,6 +63,7 @@ function loadProject() {
         gridStart: Math.max(0, Math.min(180, Number(data.gridStart) || 0)),
         syncMode: ['off','tape','grain'].includes(data.syncMode) ? data.syncMode : 'off',
         loops: normalizeLoops(data.loops), loopBars: [1,2,4].includes(data.loopBars) ? data.loopBars : 1,
+        overdubGain:clamp(data.overdubGain ?? .85,0,1.5),
         quantize: ['1/16', '1/8', '1/4'].includes(data.quantize) ? data.quantize : '1/16',
         padVelocity: clamp(data.padVelocity ?? DEFAULT_VELOCITY, 0.05, 1),
         bpm: clamp(data.bpm, 40, 240), swing: clamp(data.swing, 0, 70),
@@ -109,6 +110,7 @@ function Icon({ name, size = 18 }) {
     shuffle: <><path d="m17 3 4 4-4 4" /><path d="M3 17h4l10-10h4M3 7h4l2 2m4 6 4 2h4m-4 0 4-4" /></>,
     trash: <><path d="M4 7h16M9 7V4h6v3M6 7l1 14h10l1-14M10 11v6m4-6v6" /></>,
     mic: <><rect x="9" y="2" width="6" height="13" rx="3" /><path d="M5 10a7 7 0 0 0 14 0M12 17v5m-4 0h8" /></>,
+    layers: <><path d="m12 2 9 5-9 5-9-5 9-5z" /><path d="m3 12 9 5 9-5M3 17l9 5 9-5" /></>,
     power: <><path d="M12 2v10" /><path d="M5 5a9 9 0 1 0 14 0" /></>,
   };
   return <svg width={size} height={size} fill="none" stroke="currentColor" strokeWidth="1.8"
@@ -181,6 +183,8 @@ export default function App() {
   const [loops, setLoops] = useState(initial.loops);
   const [loopBars, setLoopBars] = useState(initial.loopBars);
   const [captureState, setCaptureState] = useState(null);
+  const [overdubGain, setOverdubGain] = useState(initial.overdubGain);
+  const [loopHistory, setLoopHistory] = useState(Array.from({length:4},()=>({undo:false,redo:false})));
   const [bpm, setBpm] = useState(initial.bpm);
   const [swing, setSwing] = useState(initial.swing);
   const [fx, setFx] = useState(initial.fx);
@@ -229,10 +233,10 @@ export default function App() {
   useEffect(() => {
     localStorage.setItem(KEY, JSON.stringify({
       name, pads, banks, velocities, bank, bpm, swing, fx, synth, chain, songMode, quantize, padVelocity,
-      chopDeck, chopMarkers, flipChops, sourceBpm, beatBars, gridStart, syncMode, loops, loopBars
+      chopDeck, chopMarkers, flipChops, sourceBpm, beatBars, gridStart, syncMode, loops, loopBars, overdubGain
     }));
   }, [name, pads, banks, velocities, bank, bpm, swing, fx, synth, chain, songMode, quantize,
-    padVelocity, chopDeck, chopMarkers, flipChops, sourceBpm, beatBars, gridStart, syncMode, loops, loopBars]);
+    padVelocity, chopDeck, chopMarkers, flipChops, sourceBpm, beatBars, gridStart, syncMode, loops, loopBars, overdubGain]);
 
   useEffect(() => {
     return () => { audio.stop(); audio.stopVocoder(); audio.stopChopPreview(); };
@@ -575,23 +579,25 @@ export default function App() {
     if (audio.ctx) audio.setLoopTrack(index,{...loopsRef.current[index],...update});
   };
 
-  const captureLoop = async index => {
+  const captureLoop = async (index, overdub = false) => {
     try {
       if (audio.captureJob) { setStatus('FINISH OR CANCEL THE CURRENT RECORDING FIRST'); return; }
       if (!audio.playing) await startTransport();
-      const requestedBars=loopBars;
-      setCaptureState({source:'live',track:index,stage:'preparing'});
+      const requestedBars=overdub ? loopsRef.current[index].bars : loopBars;
+      setCaptureState({source:'live',track:index,stage:'preparing',overdub});
       await audio.armLoopCapture({
-        source:'live',track:index,bars:requestedBars,
-        onState:stage=>setCaptureState({source:'live',track:index,stage}),
+        source:'live',track:index,bars:requestedBars,overdub,overdubGain,
+        onState:stage=>setCaptureState({source:'live',track:index,stage,overdub}),
         onDone:async(buffer,info)=>{
           setCaptureState(null);
           // Respect mixer settings chosen before the first take was recorded.
           audio.setLoopTrack(index,loopsRef.current[index]);
+          setLoopHistory(old=>old.map((value,i)=>i===index?
+            {undo:audio.canUndoLoop(index),redo:audio.canRedoLoop(index)}:value));
           setLoops(old=>old.map((track,i)=>i===index?{
             ...track,hasAudio:true,bpm:info.bpm,bars:info.bars
           }:track));
-          setStatus('LOOP '+(index+1)+' CAPTURED / '+info.bars+' BAR(S) / PLAYING');
+          setStatus('LOOP '+(index+1)+(info.overdub?' OVERDUBBED':' CAPTURED')+' / '+info.bars+' BAR(S) / PLAYING');
           try {
             await saveLoopTake(index,info.bpm,info.bars,buffer.sampleRate,
               buffer.getChannelData(0).slice(),buffer.getChannelData(1).slice());
@@ -643,9 +649,44 @@ export default function App() {
   const clearLoopTrack = async index => {
     if(audio.captureJob) {setStatus('CANCEL THE ACTIVE CAPTURE BEFORE CLEARING A TRACK');return;}
     audio.removeLoopTrack(index);
+    setLoopHistory(old=>old.map((value,i)=>i===index?{undo:false,redo:false}:value));
     setLoops(old=>old.map((track,i)=>i===index?{...track,hasAudio:false}:track));
     try {await deleteLoopTake(index);setStatus('LOOP '+(index+1)+' CLEARED');}
     catch(error){setStatus('LOOP CLEARED FROM MEMORY, BUT LOCAL STORAGE FAILED: '+error.message);}
+  };
+
+  const toggleLoopHistory = async(index,direction) => {
+    if(audio.captureJob || captureState) {
+      setStatus('FINISH OR CANCEL LOOP CAPTURE BEFORE RESTORING A TAKE');return;
+    }
+    try{
+      const version=audio.restoreLoopVersion(index,direction);
+      if(version===undefined)return;
+      if(version){
+        const {buffer,bpm:recordedBpm,bars}=version;
+        await saveLoopTake(index,recordedBpm,bars,buffer.sampleRate,
+          buffer.getChannelData(0).slice(),buffer.getChannelData(1).slice());
+        audio.setLoopTrack(index,loopsRef.current[index]);
+        setLoops(old=>old.map((track,i)=>i===index?{...track,hasAudio:true,bpm:recordedBpm,bars}:track));
+      } else {
+        await deleteLoopTake(index);
+        setLoops(old=>old.map((track,i)=>i===index?{...track,hasAudio:false}:track));
+      }
+      setLoopHistory(old=>old.map((value,i)=>i===index?
+        {undo:audio.canUndoLoop(index),redo:audio.canRedoLoop(index)}:value));
+      setStatus('TRACK '+(index+1)+' '+direction.toUpperCase()+' / PREVIOUS AUDIO '+(version?'RESTORED':'REMOVED'));
+    }catch(error){setStatus('TAKE RESTORE FAILED: '+error.message);}
+  };
+
+  const exportLoopWav = index => {
+    try{
+      const version=audio.loopBuffers.get(index);
+      if(!version)throw new Error('NO LOOP AUDIO TO EXPORT');
+      const wav=encodeWav(version.buffer);
+      const safeName=(loopsRef.current[index].name||'Loop').replace(/[^a-z0-9_-]+/gi,'-').slice(0,30);
+      download(wav,'PhiBox-'+safeName+'-'+version.bpm+'bpm-'+version.bars+'bar.wav');
+      setStatus('WAV EXPORTED: TRACK '+(index+1)+' / '+version.bpm+' BPM');
+    }catch(error){setStatus('WAV EXPORT FAILED: '+error.message);}
   };
 
   const updatePadFX = (key,value) => {
@@ -656,9 +697,9 @@ export default function App() {
   };
 
   const onExport = () => {
-    const project = { version: 5, name, pads, banks, velocities, bank, bpm, swing, fx, synth, chain, songMode, quantize, padVelocity,
+    const project = { version: 6, name, pads, banks, velocities, bank, bpm, swing, fx, synth, chain, songMode, quantize, padVelocity,
       chopDeck, chopMarkers, flipChops, sourceBpm, beatBars, gridStart, syncMode,
-      loopBars, loopSettings:loops.map(({name,muted,volume,bars,bpm})=>({name,muted,volume,bars,bpm})),
+      loopBars, overdubGain, loopSettings:loops.map(({name,muted,volume,bars,bpm})=>({name,muted,volume,bars,bpm})),
       notice: 'Audio files are NOT embedded in JSON. Back up your source breaks and pad samples; reimport them on other devices.' };
     download(new Blob([JSON.stringify(project, null, 2)], { type: 'application/json' }),
       'PhiBox-' + name.replace(/[^a-z0-9]+/gi, '-').slice(0, 36) + '.json');
@@ -672,6 +713,7 @@ export default function App() {
         !data.banks.every(isPattern) || !Array.isArray(data.pads) || data.pads.length !== 16)
         throw new Error('INVALID PHIBOX PROJECT');
       stopTransport();
+      setLoopHistory(Array.from({length:4},()=>({undo:false,redo:false})));
       const d = factory();
       setName(String(data.name || d.name).slice(0, 44));
       setPads(d.pads.map((p, i) => ({
@@ -686,6 +728,7 @@ export default function App() {
       setChopMarkers(normalizeMarkers(data.chopMarkers));
       setFlipChops(data.flipChops === true);
       setSourceBpm(safeTempo(data.sourceBpm));
+      setOverdubGain(clamp(data.overdubGain ?? .85,0,1.5));
       setBeatBars([1,2,4].includes(data.beatBars) ? data.beatBars : 4);
       setGridStart(Math.max(0,Math.min(180, Number(data.gridStart) || 0)));
       setSyncMode(['off','tape','grain'].includes(data.syncMode) ? data.syncMode : 'off');
@@ -778,7 +821,7 @@ export default function App() {
             <div className="brand-sub">THE INFINITE GROOVE MACHINE</div></div>
         </div>
         <div className="topbar-center"><span className="live-light" /> BROWSER AUDIO WORKSTATION
-          <span className="topbar-divider" /> V 0.5.0 <span className="beta-pill">ALPHA</span>
+          <span className="topbar-divider" /> V 0.6.0 <span className="beta-pill">ALPHA</span>
         </div>
         <a className="github-link" href="https://github.com/MichaelWave369/PhiBox" target="_blank" rel="noreferrer">
           SOURCE CODE <span aria-hidden="true">↗</span>
@@ -975,6 +1018,11 @@ export default function App() {
                 <option value="1">1 BAR</option><option value="2">2 BARS</option><option value="4">4 BARS</option>
               </select></label>
             <span>RECORDING STARTS ON THE NEXT BAR · SOURCE: LIVE INSTRUMENT BUS</span>
+            <label className="forge-overdub-level">OVERDUB LAYER LEVEL
+              <input type="range" aria-label="Overdub layer gain" min="0" max="1.5" step=".05"
+                value={overdubGain} disabled={!!captureState}
+                onChange={e=>setOverdubGain(Number(e.target.value))}/>
+              <b>{Math.round(overdubGain*100)}%</b></label>
             {captureState && <button type="button" className="forge-cancel" onClick={()=>audio.cancelCapture()}>
               CANCEL CAPTURE</button>}
           </div>
@@ -1001,6 +1049,19 @@ export default function App() {
                   <button type="button" className="forge-track-record"
                     disabled={!!captureState} onClick={()=>captureLoop(index)}>
                     <Icon name="record" size={13}/> {loop.hasAudio?'REPLACE':'REC LOOP'}</button>
+                  <button type="button" className="forge-overdub-button"
+                    disabled={!!captureState||!loop.hasAudio} onClick={()=>captureLoop(index,true)}
+                    title={'Add live performance onto Loop '+(index+1)+' without erasing the existing take'}>
+                    <Icon name="layers" size={13}/> OVERDUB</button>
+                  <button type="button" className="forge-undo-button"
+                    disabled={!!captureState||!loopHistory[index].undo}
+                    onClick={()=>toggleLoopHistory(index,'undo')}>UNDO</button>
+                  <button type="button" className="forge-undo-button"
+                    disabled={!!captureState||!loopHistory[index].redo}
+                    onClick={()=>toggleLoopHistory(index,'redo')}>REDO</button>
+                  <button type="button" className="forge-export-button"
+                    disabled={!!captureState||!loop.hasAudio}
+                    onClick={()=>exportLoopWav(index)}><Icon name="download" size={12}/> WAV</button>
                   <button type="button" className="forge-track-clear" disabled={!!captureState||!loop.hasAudio}
                     onClick={()=>clearLoopTrack(index)}>CLEAR</button>
                 </div>
