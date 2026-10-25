@@ -57,6 +57,14 @@ Loop Forge can now **overdub onto an existing track** without destroying its pre
 
 Read [R6 Overdub Deck manual](docs/OVERDUB_DECK.md) for the practical workflow and monitoring caveat: the live capture input still includes playing sequencer pads, so mute duplicated patterns when overdubbing.
 
+## R7 / The Live Room
+
+Connect an external **microphone or audio interface** using explicit browser permission, select an input device, adjust its gain, and optionally enable headphone monitoring. **Monitoring starts OFF** for safety. Record either the combined **PADS + INPUT** bus or isolated **INPUT ONLY** into any loop lane.
+
+New **PUNCH IN/OUT** controls replace a user-selected part of an existing 1/2/4-bar loop without touching the rest. One-level undo/redo still works. Four-loop mixer channels now include real peak meters, stereo **PAN** and **SOLO**, alongside existing volume and mute controls.
+
+[Read the R7 Live Room user guide](docs/LIVE_ROOM.md) for setup and feedback safety. Input recordings and loop audio stay device-local; JSON project exports do not contain PCM samples.
+
 ## Storage and privacy
 
 PhiBox stores pattern banks, FX and synth parameters in **localStorage**, and any imported sample audio blobs in **IndexedDB**. Samples are processed locally. No account, server or telemetry is required to play.

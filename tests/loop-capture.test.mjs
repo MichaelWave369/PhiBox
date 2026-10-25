@@ -42,3 +42,16 @@ test('master resample selects input one; cancel discards pending capture',async(
   assert.ok(posted.some(x=>x.type==='aborted'&&x.id===3));
   assert.equal(processor.job,null);
 });
+
+test('external-input-only capture selects the isolated third worklet input',async()=>{
+  const {posted,processor}=await makeProcessor();
+  processor.port.onmessage({data:{type:'arm',id:4,startFrame:0,frames:8,source:'input'}});
+  const pads=new Float32Array(128).fill(.25);
+  const master=new Float32Array(128).fill(.75);
+  const mic=new Float32Array(128).fill(.5);
+  processor.process([[pads,pads],[master,master],[mic,mic]],[[new Float32Array(128)]]);
+  const result=posted.find(item=>item.id===4 && item.type==='complete');
+  assert.ok(result);
+  assert.equal(new Float32Array(result.left)[0],.5);
+  assert.equal(new Float32Array(result.right)[0],.5);
+});
