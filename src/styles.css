@@ -345,3 +345,84 @@
   .forge-overdub-level {width:100%}
   .forge-overdub-level input {flex:1;min-width:55px}
 }
+
+
+/* PhiBox R7 · The Live Room: permission-led physical input, peak meters and punch editing. */
+.live-room,.punch-panel {
+  background:linear-gradient(125deg,#302338,#211d2c);
+  border:1px solid #684861;border-radius:9px;padding:17px;margin-top:16px;
+}
+.live-room-heading,.punch-head {display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:12px}
+.live-room-heading>div,.punch-head>div {display:grid;gap:5px}
+.live-room-heading strong,.punch-head strong {color:#f2d4c2;font-size:17px}
+.live-room-heading p,.punch-head p {margin:0;color:#b6a0b5;font-size:11px;line-height:1.55}
+.live-input-indicator {
+  display:inline-flex;align-items:center;gap:9px;color:#c8adbe;
+  border:1px solid #795a73;background:#3b2c40;
+  padding:11px 12px;border-radius:8px;font:9px 'DM Mono',monospace;
+}
+.live-input-indicator i {width:8px;height:8px;border-radius:50%;background:#a76c75}
+.live-input-indicator.active i {background:#a4edb5;box-shadow:0 0 10px #7fffab80}
+.live-input-toolbar {display:flex;align-items:center;flex-wrap:wrap;gap:10px;margin-top:17px}
+.live-input-toolbar button,.punch-panel button {
+  border:1px solid #855b79;background:#48334b;border-radius:7px;
+  color:#e7c5d2;padding:12px 14px;font:10px 'DM Mono',monospace;
+}
+.live-input-toolbar button:disabled {opacity:.4;cursor:not-allowed}
+.live-input-toolbar button.live-connect {display:inline-flex;align-items:center;gap:8px;background:#644359;color:#f9d9bf;border-color:#b17c91}
+.live-input-toolbar button.live-disconnect {background:#67363e;color:#ffd1c8;border-color:#b97b86}
+.live-input-toolbar button.live-monitor {display:inline-flex;align-items:center;gap:6px}
+.live-input-toolbar button.live-monitor.on {background:#78603b;border-color:#ffd39a;color:#ffe0aa}
+.live-input-toolbar label,.punch-controls label {
+  display:flex;align-items:center;gap:8px;color:#c0aabf;
+  font:9px 'DM Mono',monospace;letter-spacing:.35px;
+}
+.live-input-toolbar select,.punch-controls select {
+  padding:9px 10px;min-height:37px;max-width:230px;color:#f3d5db;background:#2d2637;
+  border:1px solid #775877;border-radius:6px;font:11px 'DM Mono',monospace;
+}
+.live-input-toolbar label b {color:#f1cca7;min-width:30px}
+.live-input-toolbar input {max-width:96px;accent-color:#e5b4e9}
+.live-input-meter,.forge-real-meter {
+  background:#14141e;border:1px solid #584359;border-radius:4px;height:11px;
+  overflow:hidden;position:relative;
+}
+.live-input-meter {flex:1;min-width:94px}
+.forge-real-meter {width:72px;height:10px}
+.live-input-meter span,.forge-real-meter span {
+  display:block;height:100%;background:linear-gradient(90deg,#8ac39c 0%,#e8c17d 68%,#ea727c 95%);
+  transition:width .11s ease-out;
+}
+.live-input-warning {
+  display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px;
+  padding-top:12px;margin-top:12px;border-top:1px solid #4a384d;
+  font:9px 'DM Mono',monospace;color:#ceada6;line-height:1.6;
+}
+.punch-panel {background:linear-gradient(135deg,#2d273b,#211f2d);border-color:#625377}
+.punch-controls {display:flex;align-items:center;flex-wrap:wrap;gap:11px;margin-top:16px}
+.punch-controls label {flex-direction:column;align-items:flex-start;gap:7px}
+.punch-controls select {min-width:98px}
+.punch-scale {display:flex;flex:1;min-width:144px;gap:3px;padding:8px 0}
+.punch-scale span {flex:1;min-width:3px;height:26px;border-radius:2px;background:#423a51;border:1px solid #5b4d67}
+.punch-scale span.selected {background:linear-gradient(180deg,#ffc89f,#e58bb9);border-color:#e7a6af;box-shadow:0 0 8px #d6a6db30}
+.punch-note {color:#b39cb7;font:9px 'DM Mono',monospace;letter-spacing:.3px;line-height:1.6;margin-top:10px}
+.forge-track-actions button.forge-punch-button {
+  border-color:#d39d74;background:#6b4b3c;color:#ffe0aa;font-weight:700;
+}
+.forge-track-actions button.forge-solo-active {
+  border-color:#f6d18e;background:#725633;color:#ffe5aa;font-weight:700;
+}
+@media(max-width:800px){
+  .live-input-toolbar label {flex-wrap:wrap}
+  .punch-scale {width:100%;flex:auto}
+}
+@media(max-width:540px){
+  .live-room,.punch-panel {padding:12px}
+  .live-input-toolbar .live-connect,.live-input-toolbar .live-disconnect {width:100%;justify-content:center}
+  .live-input-toolbar label {width:100%}
+  .live-input-toolbar input {max-width:none;flex:1}
+  .live-input-toolbar label select {width:100%;max-width:none}
+}
+@media(prefers-reduced-motion:reduce){
+  .live-input-meter span,.forge-real-meter span {transition:none}
+}
