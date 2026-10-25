@@ -621,3 +621,86 @@
   .phiflex-browser-bar input {max-width:none}
   .phiflex-audition {width:100%}
 }
+
+
+/* R9 / ChippyDip inter-app patch portal */
+.patch-portal {
+  margin-top:20px;padding:19px;border:1px solid #9e7695;border-radius:10px;
+  background:linear-gradient(128deg,#32263e,#211e2d 65%,#2a2036);
+}
+.patch-portal-header,.patch-edit-head {
+  display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:14px;
+}
+.patch-portal-header>div:first-child,.patch-edit-head>div:first-child {
+  display:flex;flex-direction:column;gap:6px;
+}
+.patch-portal-header strong {font-size:20px;color:#f9d5b7}
+.patch-portal-header p {margin:0;color:#baa5bb;font-size:11px;line-height:1.6}
+.patch-portal-actions {display:flex;gap:9px;flex-wrap:wrap}
+.patch-portal-actions button,.patch-edit-head button {
+  padding:12px 15px;border:1px solid #c592ae;border-radius:7px;
+  color:#f8d6e6;background:#633d5e;font:10px 'DM Mono',monospace;
+  cursor:pointer;min-height:42px;
+}
+.patch-portal-actions button.patch-export {
+  color:#282131;background:linear-gradient(120deg,#f4cc9f,#e8a4c3);border-color:#f8d5b2;font-weight:700;
+}
+.patch-portal-actions button:hover,.patch-edit-head button:hover:not(:disabled) {filter:brightness(1.14)}
+.patch-portal-info {
+  display:flex;justify-content:space-between;flex-wrap:wrap;gap:9px;
+  padding:12px 0;margin:14px 0;border-top:1px solid #55415c;border-bottom:1px solid #55415c;
+  color:#b6a1b8;font:9px 'DM Mono',monospace;line-height:1.55;
+}
+.patch-edit-layer {
+  display:flex;align-items:center;gap:10px;flex-wrap:wrap;
+  color:#f1c4d4;font:10px 'DM Mono',monospace;margin:12px 0;
+}
+.patch-portal select {background:#2a2335;color:#f5dadc;border:1px solid #735c7f;border-radius:5px;padding:9px}
+.patch-edit-head {padding:6px 0 13px}
+.patch-edit-head strong {color:#ffe0b7;font-size:16px}
+.patch-edit-head small {color:#d8aacb;font-size:10px}
+.patch-edit-head button {background:#403044;color:#cdb6d1;border-color:#6b546f}
+.patch-edit-head button:disabled {opacity:.4;cursor:not-allowed}
+.patch-wave-editor,.patch-fm-editor,.patch-snes-editor,.patch-pulse-editor {
+  padding:15px;border-radius:8px;background:#211d2c;border:1px solid #4c405a;
+}
+.patch-wave-editor p {font-size:11px;color:#b6a7b8;margin:0 0 12px}
+.patch-wave-columns {display:grid;grid-template-columns:repeat(32,minmax(0,1fr));gap:4px;align-items:end}
+.patch-wave-columns label {display:flex;align-items:center;flex-direction:column;min-width:0;gap:7px}
+.patch-wave-columns label input {
+  -webkit-appearance:slider-vertical;appearance:slider-vertical;
+  writing-mode:vertical-lr;direction:rtl;
+  height:115px;width:100%;max-width:16px;accent-color:#efa1c4;
+  touch-action:none;
+}
+.patch-wave-columns label span {font:8px 'DM Mono',monospace;color:#b69ab8}
+.patch-fm-master {display:flex;align-items:center;gap:20px;flex-wrap:wrap;margin-bottom:16px}
+.patch-fm-master label,.patch-fm-op label,.patch-snes-editor label,.patch-pulse-editor label {
+  display:flex;align-items:center;gap:9px;flex-wrap:wrap;
+  color:#ccb6c6;font:10px 'DM Mono',monospace;
+}
+.patch-fm-master label b,.patch-fm-op label b,.patch-snes-editor label b {color:#ffcfaa;min-width:39px}
+.patch-fm-master input,.patch-fm-op input,.patch-snes-editor input[type=range] {accent-color:#e9add4}
+.patch-fm-operators {display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px}
+.patch-fm-op {display:flex;flex-direction:column;gap:15px;min-width:0;
+  border:1px solid #635074;border-radius:7px;padding:13px;background:#2d2739}
+.patch-fm-op strong {color:#f3c6ab;font:11px 'DM Mono',monospace}
+.patch-fm-op label {display:grid;grid-template-columns:1fr auto}
+.patch-fm-op label input {grid-column:1/-1;width:100%}
+.patch-snes-editor {display:flex;flex-wrap:wrap;gap:15px}
+.patch-snes-editor label {flex:1;min-width:125px}
+.patch-snes-editor label input[type=range] {width:100%}
+.patch-snes-loop {justify-content:center}
+.patch-no-editor {color:#baa8be;font-size:11px}
+@media(max-width:1100px){
+  .patch-fm-operators {grid-template-columns:repeat(2,minmax(0,1fr))}
+  .patch-wave-columns {gap:2px}
+}
+@media(max-width:650px){
+  .patch-portal {padding:13px}
+  .patch-portal-actions {width:100%}
+  .patch-portal-actions button {width:100%}
+  .patch-fm-operators {grid-template-columns:1fr 1fr}
+  .patch-wave-columns {grid-template-columns:repeat(16,minmax(0,1fr));row-gap:12px}
+  .patch-wave-columns label input {height:76px}
+}
