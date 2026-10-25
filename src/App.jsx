@@ -847,6 +847,24 @@ export default function App() {
                 {!pad.chop && pad.sampleName && <button className="small-ghost-button" onClick={removeSelectedSample}>RESET</button>}
               </div>
             </div>
+            <div className="pad-fx-mini">
+              <div className="pad-fx-head"><span className="overline">R5 / PAD FX BUS</span>
+                <strong>VOICE {String(selected + 1).padStart(2, '0')} · FILTER / PAN / SENDS</strong></div>
+              <div className="pad-fx-grid">
+                {[
+                  ['cutoff','FILTER',200,20000,20,v=>(v/1000).toFixed(1)+'K'],
+                  ['pan','PAN',-1,1,.01,v=>v===0?'C':v<0?'L'+Math.round(-v*100):'R'+Math.round(v*100)],
+                  ['delay','DELAY SEND',0,.75,.01,v=>Math.round(v*100)+'%'],
+                  ['reverb','REVERB SEND',0,.75,.01,v=>Math.round(v*100)+'%']
+                ].map(([key,label,min,max,step,show])=>(
+                  <label key={key}><span>{label} <b>{show(pad.padFx?.[key] ?? DEFAULT_PAD_FX[key])}</b></span>
+                    <input type="range" min={min} max={max} step={step}
+                      aria-label={'Pad '+(selected+1)+' '+label} value={pad.padFx?.[key] ?? DEFAULT_PAD_FX[key]}
+                      onChange={e=>updatePadFX(key,Number(e.target.value))}/>
+                  </label>
+                ))}
+              </div>
+            </div>
             <input ref={fileRef} hidden type="file" accept="audio/*,.wav,.mp3,.flac,.aif,.aiff,.ogg,.m4a"
               onChange={e => { importSample(targetRef.current, e.target.files?.[0]); e.target.value = ''; }} />
             <div className="panel-note">TIP · DRAG AUDIO ONTO ANY PAD OR USE KEYS 1–4, Q–R, A–F, Z–V</div>
@@ -935,6 +953,70 @@ export default function App() {
               onClick={() => setChain(old => [...old, old.at(-1) ?? 0])}>+ ADD BAR</button>
               <button type="button" disabled={chain.length <= 1}
                 onClick={() => setChain(old => old.slice(0, -1))}>− REMOVE BAR</button></div>
+          </div>
+        </section>
+
+        <section className="panel loop-forge-panel">
+          <div className="forge-header">
+            <div><span className="overline">08 / LIVE PERFORMANCE LAB · R5</span>
+              <h2>Φ Loop Forge <span className="forge-flag">4 TRACK STUDIO</span></h2>
+              <p>Record your live pads into independent tracks, then resample the entire groove back into the Chop Shop.</p>
+            </div>
+            <div className="forge-status"><i className={captureState?'capturing':''}/>
+              {captureState ? (captureState.stage+' / '+(captureState.source==='master'?'MASTER':'TRACK '+(captureState.track+1))).toUpperCase() :
+                playing ? 'TRANSPORT RUNNING' : 'READY TO LOOP'}</div>
+          </div>
+          <div className="forge-transport">
+            <label>LOOP LENGTH
+              <select aria-label="Loop capture length in bars" value={loopBars}
+                disabled={!!captureState} onChange={e=>setLoopBars(Number(e.target.value))}>
+                <option value="1">1 BAR</option><option value="2">2 BARS</option><option value="4">4 BARS</option>
+              </select></label>
+            <span>RECORDING STARTS ON THE NEXT BAR · SOURCE: LIVE INSTRUMENT BUS</span>
+            {captureState && <button type="button" className="forge-cancel" onClick={()=>audio.cancelCapture()}>
+              CANCEL CAPTURE</button>}
+          </div>
+          <div className="forge-tracks">
+            {loops.map((loop,index)=>(
+              <div key={index} className={'forge-track '+(loop.hasAudio?'has-take':'')}>
+                <div className="forge-track-id"><span>{String(index+1).padStart(2,'0')}</span>
+                  <div className={'forge-meter '+(loop.hasAudio&&!loop.muted&&playing?'active':'')}>
+                    <i/><i/><i/><i/><i/><i/></div></div>
+                <div className="forge-track-content">
+                  <strong>{loop.name}</strong>
+                  <small>{loop.hasAudio ? loop.bars+' BAR(S) · '+loop.bpm+' BPM · LOCAL TAKE' :
+                    'EMPTY / RECORD A NEW LAYER'}</small>
+                  <label>LEVEL <input type="range" min="0" max="1" step=".01"
+                      aria-label={'Loop '+(index+1)+' volume'} value={loop.volume}
+                      onChange={e=>changeLoopSettings(index,{volume:Number(e.target.value)})}/>
+                    <span>{Math.round(loop.volume*100)}%</span></label>
+                </div>
+                <div className="forge-track-actions">
+                  <button type="button" className={loop.muted?'is-muted':''}
+                    aria-label={'Mute loop track '+(index+1)} aria-pressed={loop.muted}
+                    onClick={()=>changeLoopSettings(index,{muted:!loop.muted})}>
+                    {loop.muted?'UNMUTE':'MUTE'}</button>
+                  <button type="button" className="forge-track-record"
+                    disabled={!!captureState} onClick={()=>captureLoop(index)}>
+                    <Icon name="record" size={13}/> {loop.hasAudio?'REPLACE':'REC LOOP'}</button>
+                  <button type="button" className="forge-track-clear" disabled={!!captureState||!loop.hasAudio}
+                    onClick={()=>clearLoopTrack(index)}>CLEAR</button>
+                </div>
+              </div>
+            ))}
+          </div>
+          <div className="forge-resample">
+            <div><span className="overline">THE RECURSIVE LABORATORY</span>
+              <strong>Resample the whole performance</strong>
+              <p>Captures the processed stereo master, including loop tracks, for direct loading into our 16-pad Sample Chop Shop.</p>
+            </div>
+            <button type="button" disabled={!!captureState} onClick={captureMaster}>
+              <Icon name="record" size={18}/> RESAMPLE → CHOP SHOP
+            </button>
+          </div>
+          <div className="forge-footer">
+            <span>LOOP TAKES ARE SAVED ONLY ON THIS DEVICE · JSON EXPORT DOES NOT INCLUDE AUDIO</span>
+            <span>MASTER RESAMPLE INCLUDES ACTIVE LOOPS · LIVE TRACK CAPTURE EXCLUDES THEM</span>
           </div>
         </section>
 
