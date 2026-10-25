@@ -1162,7 +1162,7 @@ export default function App() {
                 disabled={!!captureState} onChange={e=>setLoopBars(Number(e.target.value))}>
                 <option value="1">1 BAR</option><option value="2">2 BARS</option><option value="4">4 BARS</option>
               </select></label>
-            <span>QUEUED TO THE NEXT BAR · '+(captureSource==='input'?'ISOLATED MIC/LINE INPUT':'PAD + INPUT BUS')+'</span>
+            <span>QUEUED TO THE NEXT BAR · {captureSource==='input'?'ISOLATED MIC/LINE INPUT':'PAD + INPUT BUS'}</span>
             <label className="forge-overdub-level">OVERDUB LAYER LEVEL
               <input type="range" aria-label="Overdub layer gain" min="0" max="1.5" step=".05"
                 value={overdubGain} disabled={!!captureState}
