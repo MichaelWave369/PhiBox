@@ -586,6 +586,8 @@ export default function App() {
         onState:stage=>setCaptureState({source:'live',track:index,stage}),
         onDone:async(buffer,info)=>{
           setCaptureState(null);
+          // Respect mixer settings chosen before the first take was recorded.
+          audio.setLoopTrack(index,loopsRef.current[index]);
           setLoops(old=>old.map((track,i)=>i===index?{
             ...track,hasAudio:true,bpm:info.bpm,bars:info.bars
           }:track));
