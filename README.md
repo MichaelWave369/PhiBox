@@ -22,6 +22,15 @@ After merging the first pull request, set repository Settings → Pages → Buil
 - **Connect MIDI** requests a MIDI device. Incoming MIDI notes 36–51 trigger the sixteen pads; other notes play the keyboard synth.
 - Press the red recording control to capture the master output. Press again to download the browser's recording file.
 
+## Performance recorder and pattern chain (R2)
+
+- **REC PADS** overdubs mouse, keyboard and MIDI pad hits into 16-step patterns using the audio clock and a selectable 1/16, 1/8 or 1/4 quantization grid.
+- Each step saves its own playback velocity. MIDI preserves velocity; keyboard and mouse use the adjustable KEY VELOCITY. Edit any selected step with the STEP VELOCITY slider.
+- **Pattern Chain** arranges up to 16 bars using A–D pattern banks; activate SONG MODE to loop the chain. An active recording follows the bank at the quantized capture point, even across bar transitions.
+- Legacy v1 session JSON files are accepted and automatically receive default velocity values for active steps.
+
+**[Read the live-recording and arranger guide](docs/PERFORMANCE.md)**. The red record button on the transport still exports audio; REC PADS separately writes pattern events.
+
 ## Storage and privacy
 
 PhiBox stores pattern banks, FX and synth parameters in **localStorage**, and any imported sample audio blobs in **IndexedDB**. Samples are processed locally. No account, server or telemetry is required to play.
