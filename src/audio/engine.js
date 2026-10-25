@@ -1,6 +1,6 @@
 import { midiToHz, clamp } from './patterns.js';
 import { chooseCaptureStep, DEFAULT_VELOCITY } from './performance.js';
-import { audioPeaks, normalizeChop } from './chops.js';
+import { audioPeaks, playbackWindow } from './chops.js';
 
 class PhiAudioEngine {
   constructor() {
@@ -242,16 +242,13 @@ class PhiAudioEngine {
   }
 
   playChop(chop, velocity = 0.86, tune = 0, when, preview = false) {
-    const range = normalizeChop(chop);
-    if (!range) throw new Error('Invalid chop region. Please slice the sample again.');
-    const forward = this.chopSources.get(range.sourceId);
+    const forward = this.chopSources.get(chop?.sourceId);
     if (!forward) throw new Error('Chop source unavailable. Reload the break in Chop Shop.');
-    const reversed = range.reverse ? this.getReversedSource(range.sourceId) : forward;
-    const start = (range.reverse ? 1 - range.end : range.start) * forward.duration;
-    const duration = Math.max(0.001, (range.end - range.start) * forward.duration);
-    const rate = Math.pow(2, clamp(tune, -12, 12) / 12);
+    const window = playbackWindow(chop, forward.duration, tune);
+    if (!window) throw new Error('Invalid chop region. Please slice the sample again.');
+    const reversed = chop.reverse ? this.getReversedSource(chop.sourceId) : forward;
+    const { offset: start, duration, rate, audibleSeconds } = window;
     const time = Math.max(this.ctx.currentTime, when ?? this.ctx.currentTime);
-    const audibleSeconds = duration / rate;
     const fade = Math.min(0.006, audibleSeconds / 4);
     const source = this.ctx.createBufferSource();
     const gain = this.ctx.createGain();
