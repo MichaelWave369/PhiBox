@@ -10,6 +10,8 @@ import { equalMarkers, normalizeMarkers, normalizeChop, sliceFor, moveMarker, ch
 import { beatGridMarkers, safeTempo } from './audio/break-intelligence.js';
 import { LOOP_DEFAULTS, normalizeLoops, encodeWav } from './audio/loop-utils.js';
 import ChopWaveform from './components/ChopWaveform.jsx';
+import PhiFlexRack from './components/PhiFlexRack.jsx';
+import {makeInstrument,sanitizeInstrument} from './audio/instrument-state.js';
 
 const KEY = 'phibox-project-v1';
 const DEFAULT_FX = { volume: 0.78, cutoff: 14000, drive: 0.08, delay: 0.16, reverb: 0.12 };
@@ -27,7 +29,7 @@ const freshPads = () => PAD_PRESETS.map(p => ({ ...p, tune: 0, padFx:{...DEFAULT
 const factory = () => {
   const banks = makePatternBanks();
   return {
-    name: 'FIRST CONTACT', pads: freshPads(), banks,
+    name: 'FIRST CONTACT', pads: freshPads(), banks, instrument:makeInstrument(),
     velocities: velocitiesFromBanks(banks),
     bank: 0, bpm: 108, swing: 12, fx: { ...DEFAULT_FX }, synth: { ...DEFAULT_SYNTH },
     chain: [0, 1, 0, 2], songMode: false, quantize: '1/16', padVelocity: DEFAULT_VELOCITY,
@@ -53,6 +55,7 @@ function loadProject() {
           padFx: safePadFx(data.pads[i]?.padFx),
         })),
         banks: data.banks, velocities: normalizeVelocities(data.velocities, data.banks),
+        instrument:sanitizeInstrument(data.instrument),
         bank: clamp(data.bank, 0, 3),
         chain: sanitizeChain(data.chain), songMode: data.songMode === true,
         chopDeck: typeof data.chopDeck?.id === 'string' && /^[a-f0-9]{64}$/.test(data.chopDeck.id)
@@ -204,6 +207,7 @@ export default function App() {
   const [swing, setSwing] = useState(initial.swing);
   const [fx, setFx] = useState(initial.fx);
   const [synth, setSynth] = useState(initial.synth);
+  const [instrument,setInstrument] = useState(initial.instrument);
   const [playing, setPlaying] = useState(false);
   const [playhead, setPlayhead] = useState(-1);
   const [selected, setSelected] = useState(0);
@@ -228,6 +232,7 @@ export default function App() {
   const velocityBanksRef = useRef(velocities);
   const bankRef = useRef(bank);
   const padsRef = useRef(pads);
+  const instrumentRef=useRef(instrument);
   const chainRef = useRef(chain);
   const songModeRef = useRef(songMode);
   const armedRef = useRef(armed);
@@ -237,6 +242,7 @@ export default function App() {
   velocityBanksRef.current = velocities;
   bankRef.current = bank;
   padsRef.current = pads;
+  instrumentRef.current=instrument;
   chopDeckRef.current = chopDeck;
   loopsRef.current = loops;
   chainRef.current = chain;
@@ -247,11 +253,11 @@ export default function App() {
 
   useEffect(() => {
     localStorage.setItem(KEY, JSON.stringify({
-      name, pads, banks, velocities, bank, bpm, swing, fx, synth, chain, songMode, quantize, padVelocity,
+      name, pads, banks, velocities, bank, bpm, swing, fx, synth, instrument, chain, songMode, quantize, padVelocity,
       chopDeck, chopMarkers, flipChops, sourceBpm, beatBars, gridStart, syncMode, loops, loopBars, overdubGain,
       captureSource,punchStart,punchEnd
     }));
-  }, [name, pads, banks, velocities, bank, bpm, swing, fx, synth, chain, songMode, quantize,
+  }, [name, pads, banks, velocities, bank, bpm, swing, fx, synth, instrument, chain, songMode, quantize,
     padVelocity, chopDeck, chopMarkers, flipChops, sourceBpm, beatBars, gridStart, syncMode, loops, loopBars, overdubGain,
     captureSource,punchStart,punchEnd]);
 
@@ -261,6 +267,7 @@ export default function App() {
 
   useEffect(() => { audio.setFX(fx); }, [fx]);
   useEffect(() => { audio.setSynth(synth); }, [synth]);
+  useEffect(() => { audio.setInstrumentRack(instrument); }, [instrument]);
   useEffect(() => { audio.setTransport(bpm, swing); }, [bpm, swing]);
   useEffect(() => { audio.setChopSync(syncMode); }, [syncMode]);
   useEffect(()=>{
@@ -385,7 +392,8 @@ export default function App() {
       if (songModeRef.current) setBank(playingBank);
     }, {
       getBank: () => bankRef.current,
-      getChain: () => songModeRef.current ? chainRef.current : null
+      getChain: () => songModeRef.current ? chainRef.current : null,
+      getInstrument: () => instrumentRef.current
     });
     setPlaying(true);
     setStatus(missingSources.length ?
@@ -764,7 +772,7 @@ export default function App() {
   };
 
   const onExport = () => {
-    const project = { version: 7, name, pads, banks, velocities, bank, bpm, swing, fx, synth, chain, songMode, quantize, padVelocity,
+    const project = { version: 8, name, pads, banks, velocities, bank, bpm, swing, fx, synth, instrument, chain, songMode, quantize, padVelocity,
       chopDeck, chopMarkers, flipChops, sourceBpm, beatBars, gridStart, syncMode,
       loopBars, overdubGain, captureSource,punchStart,punchEnd,
       loopSettings:loops.map(({name,muted,solo,pan,volume,bars,bpm})=>({name,muted,solo,pan,volume,bars,bpm})),
@@ -819,6 +827,7 @@ export default function App() {
       setPadVelocity(clamp(data.padVelocity ?? DEFAULT_VELOCITY, 0.05, 1));
       setBpm(clamp(data.bpm, 40, 240)); setSwing(clamp(data.swing, 0, 70));
       setFx({ ...d.fx, ...data.fx }); setSynth({ ...d.synth, ...data.synth });
+      setInstrument(sanitizeInstrument(data.instrument));
       if (Array.isArray(data.loopSettings)) {
         const imported=normalizeLoops(data.loopSettings);
         const refreshed=imported.map((settings,i)=>({
@@ -904,7 +913,7 @@ export default function App() {
             <div className="brand-sub">THE INFINITE GROOVE MACHINE</div></div>
         </div>
         <div className="topbar-center"><span className="live-light" /> BROWSER AUDIO WORKSTATION
-          <span className="topbar-divider" /> V 0.7.0 <span className="beta-pill">ALPHA</span>
+          <span className="topbar-divider" /> V 0.8.0 <span className="beta-pill">ALPHA</span>
         </div>
         <a className="github-link" href="https://github.com/MichaelWave369/PhiBox" target="_blank" rel="noreferrer">
           SOURCE CODE <span aria-hidden="true">↗</span>
@@ -1376,6 +1385,8 @@ export default function App() {
         </section>
 
         <div className="lower-grid">
+          <PhiFlexRack rack={instrument} onChange={setInstrument}
+            playing={playing} playhead={playhead} onAudition={keyDown} onRelease={keyUp}/>
           <section className="panel synth-panel">
             <PanelHeader kicker="03 / SOUND DESIGN" title="Oscillator Lab" right={<span className="chip">POLYPHONIC SYNTH</span>} />
             <div className="wave-select"><span className="overline">WAVEFORM</span><div className="wave-options">
