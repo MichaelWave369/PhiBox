@@ -1,6 +1,7 @@
 import { midiToHz, clamp } from './patterns.js';
 import { chooseCaptureStep, DEFAULT_VELOCITY } from './performance.js';
 import { audioPeaks, playbackWindow } from './chops.js';
+import { onsetEnvelope, estimatedTempo, smartTransientMarkers, tempoFactor, grainTimeline } from './break-intelligence.js';
 
 class PhiAudioEngine {
   constructor() {
@@ -9,6 +10,9 @@ class PhiAudioEngine {
     this.chopSources = new Map();
     this.reverseSources = new Map();
     this.previewVoice = null;
+    this.previewGrains = [];
+    this.analysisCache = new Map();
+    this.chopSync = 'off';
     this.voices = new Map();
     this.playing = false;
     this.currentStep = 0;
@@ -227,6 +231,21 @@ class PhiAudioEngine {
     return buffer ? { duration: buffer.duration, peaks: audioPeaks(buffer) } : null;
   }
 
+  analyzeChop(id) {
+    const buffer = this.chopSources.get(id);
+    if (!buffer) throw new Error('Load the original break before analyzing.');
+    let analysis = this.analysisCache.get(id);
+    if (!analysis) {
+      analysis = onsetEnvelope(buffer);
+      this.analysisCache.set(id, analysis);
+    }
+    return { bpm: estimatedTempo(analysis), smart: smartTransientMarkers(analysis), duration: buffer.duration };
+  }
+
+  setChopSync(mode) {
+    this.chopSync = ['off', 'tape', 'grain'].includes(mode) ? mode : 'off';
+  }
+
   getReversedSource(id) {
     if (this.reverseSources.has(id)) return this.reverseSources.get(id);
     const forward = this.chopSources.get(id);
@@ -247,8 +266,44 @@ class PhiAudioEngine {
     const window = playbackWindow(chop, forward.duration, tune);
     if (!window) throw new Error('Invalid chop region. Please slice the sample again.');
     const reversed = chop.reverse ? this.getReversedSource(chop.sourceId) : forward;
-    const { offset: start, duration, rate, audibleSeconds } = window;
+    const { offset: start, duration } = window;
     const time = Math.max(this.ctx.currentTime, when ?? this.ctx.currentTime);
+    const ratio = Number.isFinite(chop.sourceBpm) ? tempoFactor(chop.sourceBpm, this.bpm) : 1;
+    const useSync = this.chopSync !== 'off' && Number.isFinite(chop.sourceBpm);
+    const useGrains = useSync && this.chopSync === 'grain' && duration <= 8 && ratio !== 1;
+    if (preview) this.stopChopPreview();
+
+    if (useGrains) {
+      const grains = grainTimeline(duration, ratio, .09, .045);
+      const nodes = [];
+      const tuneRate = Math.pow(2, clamp(tune, -12, 12)/12);
+      for (const entry of grains) {
+        const remainingSource = duration - entry.sourceOffset;
+        const bufferSeconds = Math.min(remainingSource, entry.duration * tuneRate);
+        if (bufferSeconds <= 0.0004) continue;
+        const outputSeconds = bufferSeconds / tuneRate;
+        const src = this.ctx.createBufferSource();
+        const gain = this.ctx.createGain();
+        const at = time + entry.at;
+        const fade = Math.min(.034, outputSeconds / 2);
+        const loudness = clamp(velocity, .05, 1)*.75;
+        src.buffer = reversed;
+        src.playbackRate.value = tuneRate;
+        gain.gain.setValueAtTime(0.0001, at);
+        gain.gain.linearRampToValueAtTime(loudness, at + fade);
+        gain.gain.setValueAtTime(loudness, at + Math.max(fade, outputSeconds - fade));
+        gain.gain.linearRampToValueAtTime(0.0001, at + outputSeconds);
+        src.connect(gain).connect(this.input);
+        src.start(at, start + entry.sourceOffset, bufferSeconds);
+        src.stop(at + outputSeconds + .015);
+        nodes.push(src);
+      }
+      if (preview) this.previewGrains = nodes;
+      return nodes[0] || null;
+    }
+
+    const rate = window.rate * (useSync && this.chopSync === 'tape' ? 1 / ratio : 1);
+    const audibleSeconds = duration / rate;
     const fade = Math.min(0.006, audibleSeconds / 4);
     const source = this.ctx.createBufferSource();
     const gain = this.ctx.createGain();
@@ -262,7 +317,6 @@ class PhiAudioEngine {
     source.start(time, start, duration);
     source.stop(time + audibleSeconds + 0.025);
     if (preview) {
-      this.stopChopPreview();
       this.previewVoice = source;
       source.onended = () => { if (this.previewVoice === source) this.previewVoice = null; };
     }
@@ -270,9 +324,14 @@ class PhiAudioEngine {
   }
 
   stopChopPreview() {
-    if (!this.previewVoice) return;
-    try { this.previewVoice.stop(); } catch { /* Preview already ended. */ }
-    this.previewVoice = null;
+    if (this.previewVoice) {
+      try { this.previewVoice.stop(); } catch { /* Preview already ended. */ }
+      this.previewVoice = null;
+    }
+    for (const source of this.previewGrains) {
+      try { source.stop(); } catch { /* Grain already ended. */ }
+    }
+    this.previewGrains = [];
   }
 
   async loadSample(index, file) {

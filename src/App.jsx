@@ -7,6 +7,7 @@ import {
 } from './audio/patterns.js';
 import { DEFAULT_VELOCITY, velocitiesFromBanks, normalizeVelocities, sanitizeChain } from './audio/performance.js';
 import { equalMarkers, normalizeMarkers, normalizeChop, sliceFor, moveMarker, chopAssignments, sourceFingerprint } from './audio/chops.js';
+import { beatGridMarkers, safeTempo } from './audio/break-intelligence.js';
 import ChopWaveform from './components/ChopWaveform.jsx';
 
 const KEY = 'phibox-project-v1';
@@ -20,7 +21,8 @@ const factory = () => {
     velocities: velocitiesFromBanks(banks),
     bank: 0, bpm: 108, swing: 12, fx: { ...DEFAULT_FX }, synth: { ...DEFAULT_SYNTH },
     chain: [0, 1, 0, 2], songMode: false, quantize: '1/16', padVelocity: DEFAULT_VELOCITY,
-    chopDeck: null, chopMarkers: equalMarkers(), flipChops: false
+    chopDeck: null, chopMarkers: equalMarkers(), flipChops: false,
+    sourceBpm: 120, beatBars: 4, gridStart: 0, syncMode: 'off'
   };
 };
 function loadProject() {
@@ -45,6 +47,10 @@ function loadProject() {
           ? { id: data.chopDeck.id, name: String(data.chopDeck.name || 'BREAK').slice(0, 100) } : null,
         chopMarkers: normalizeMarkers(data.chopMarkers),
         flipChops: data.flipChops === true,
+        sourceBpm: safeTempo(data.sourceBpm),
+        beatBars: [1,2,4].includes(data.beatBars) ? data.beatBars : 4,
+        gridStart: Math.max(0, Math.min(180, Number(data.gridStart) || 0)),
+        syncMode: ['off','tape','grain'].includes(data.syncMode) ? data.syncMode : 'off',
         quantize: ['1/16', '1/8', '1/4'].includes(data.quantize) ? data.quantize : '1/16',
         padVelocity: clamp(data.padVelocity ?? DEFAULT_VELOCITY, 0.05, 1),
         bpm: clamp(data.bpm, 40, 240), swing: clamp(data.swing, 0, 70),
@@ -155,6 +161,11 @@ export default function App() {
   const [reversePreview, setReversePreview] = useState(false);
   const [wavePeaks, setWavePeaks] = useState([]);
   const [chopSeconds, setChopSeconds] = useState(0);
+  const [sourceBpm, setSourceBpm] = useState(initial.sourceBpm);
+  const [beatBars, setBeatBars] = useState(initial.beatBars);
+  const [gridStart, setGridStart] = useState(initial.gridStart);
+  const [syncMode, setSyncMode] = useState(initial.syncMode);
+  const [bpmEstimate, setBpmEstimate] = useState(null);
   const [bpm, setBpm] = useState(initial.bpm);
   const [swing, setSwing] = useState(initial.swing);
   const [fx, setFx] = useState(initial.fx);
@@ -201,9 +212,10 @@ export default function App() {
   useEffect(() => {
     localStorage.setItem(KEY, JSON.stringify({
       name, pads, banks, velocities, bank, bpm, swing, fx, synth, chain, songMode, quantize, padVelocity,
-      chopDeck, chopMarkers, flipChops
+      chopDeck, chopMarkers, flipChops, sourceBpm, beatBars, gridStart, syncMode
     }));
-  }, [name, pads, banks, velocities, bank, bpm, swing, fx, synth, chain, songMode, quantize, padVelocity, chopDeck, chopMarkers, flipChops]);
+  }, [name, pads, banks, velocities, bank, bpm, swing, fx, synth, chain, songMode, quantize,
+    padVelocity, chopDeck, chopMarkers, flipChops, sourceBpm, beatBars, gridStart, syncMode]);
 
   useEffect(() => {
     return () => { audio.stop(); audio.stopVocoder(); audio.stopChopPreview(); };
@@ -212,6 +224,7 @@ export default function App() {
   useEffect(() => { audio.setFX(fx); }, [fx]);
   useEffect(() => { audio.setSynth(synth); }, [synth]);
   useEffect(() => { audio.setTransport(bpm, swing); }, [bpm, swing]);
+  useEffect(() => { audio.setChopSync(syncMode); }, [syncMode]);
 
   const ready = useCallback(async () => {
     await audio.ensure();
@@ -435,11 +448,47 @@ export default function App() {
       setChopDeck({ id, name: file.name });
       setWavePeaks(info.peaks);
       setChopSeconds(info.duration);
-      if (!sameSource) { setChopMarkers(equalMarkers()); setSelectedSlice(0); setFlipChops(false); }
-      setStatus('BREAK DECODED: ' + file.name.slice(0, 40) + ' / ' + info.duration.toFixed(2) + 's');
+      if (!sameSource) {
+        setChopMarkers(equalMarkers()); setSelectedSlice(0); setFlipChops(false); setGridStart(0);
+        setBpmEstimate(null);
+      }
+      setStatus('BREAK DECODED: ' + file.name.slice(0, 40) + ' / ' + info.duration.toFixed(2) +
+        's. USE ANALYZE BREAK TO DETECT ITS TEMPO.');
       try { await saveChopSource(id, file.name, file); }
       catch { setStatus('BREAK PLAYS NOW, BUT LOCAL STORAGE FAILED: RELOAD FILE NEXT VISIT'); }
     } catch (error) { setStatus(error.message || 'BREAK COULD NOT BE DECODED'); }
+  };
+
+  const analyzeBreak = async () => {
+    if (!chopDeck) { setStatus('LOAD A BREAK BEFORE ANALYSIS'); return; }
+    try {
+      await ready();
+      await ensureChopSource(chopDeck.id);
+      const analysis = audio.analyzeChop(chopDeck.id);
+      setBpmEstimate(analysis.bpm);
+      if (analysis.bpm?.bpm) setSourceBpm(analysis.bpm.bpm);
+      const candidate = analysis.smart;
+      if (candidate?.markers) {
+        setChopMarkers(candidate.markers);
+        setSelectedSlice(0);
+        setStatus('SMART CHOPS: ' + candidate.snapped + ' TRANSIENTS ALIGNED; ESTIMATED ' +
+          (analysis.bpm?.bpm || 'UNKNOWN') + ' BPM. CLICK ROUTE TO UPDATE THE PADS.');
+      } else {
+        setStatus('NO STRONG TRANSIENTS FOUND. MANUAL MARKERS PRESERVED.');
+      }
+    } catch (error) { setStatus(error.message || 'BREAK ANALYSIS FAILED'); }
+  };
+
+  const applyBeatGrid = () => {
+    if (!chopDeck || !chopSeconds) { setStatus('LOAD A BREAK BEFORE BEAT GRID'); return; }
+    const result = beatGridMarkers(chopSeconds, sourceBpm, beatBars, gridStart);
+    if (!result) {
+      setStatus('BEAT GRID DOES NOT FIT. REDUCE BARS OR START OFFSET, OR TRIM A LONG BREAK.');
+      return;
+    }
+    setChopMarkers(result); setSelectedSlice(0);
+    setStatus('BEAT GRID APPLIED: ' + beatBars + ' BARS AT ' + sourceBpm +
+      ' BPM. ROUTE TO PADS TO HEAR NEW CUTS.');
   };
 
   const mapChopsToPads = () => {
@@ -447,7 +496,7 @@ export default function App() {
       setStatus('LOAD THE BREAK BEFORE SENDING SLICES TO PADS');
       return;
     }
-    const regions = chopAssignments(chopDeck.id, chopMarkers, flipChops);
+    const regions = chopAssignments(chopDeck.id, chopMarkers, flipChops, sourceBpm);
     const basename = chopDeck.name.replace(/\.[^.]+$/, '').slice(0, 9).toUpperCase();
     setPads(old => old.map((pad, i) => ({
       ...pad, chop: regions[i], chopName: basename + ' ' + String(i + 1).padStart(2, '0'), tune: 0
@@ -466,7 +515,7 @@ export default function App() {
       }
       audio.playChop({
         sourceId: chopDeck.id,
-        ...sliceFor(chopMarkers, selectedSlice), reverse: reversePreview
+        ...sliceFor(chopMarkers, selectedSlice), reverse: reversePreview, sourceBpm
       }, 0.9, 0, undefined, true);
       setStatus('PREVIEWING SLICE ' + String(selectedSlice + 1).padStart(2, '0') + (reversePreview ? ' IN REVERSE' : ''));
     } catch (error) { setStatus(error.message || 'SLICE PREVIEW FAILED. RELOAD THE SOURCE FILE.'); }
@@ -486,8 +535,8 @@ export default function App() {
   };
 
   const onExport = () => {
-    const project = { version: 3, name, pads, banks, velocities, bank, bpm, swing, fx, synth, chain, songMode, quantize, padVelocity,
-      chopDeck, chopMarkers, flipChops,
+    const project = { version: 4, name, pads, banks, velocities, bank, bpm, swing, fx, synth, chain, songMode, quantize, padVelocity,
+      chopDeck, chopMarkers, flipChops, sourceBpm, beatBars, gridStart, syncMode,
       notice: 'Audio files are NOT embedded in JSON. Back up your source breaks and pad samples; reimport them on other devices.' };
     download(new Blob([JSON.stringify(project, null, 2)], { type: 'application/json' }),
       'PhiBox-' + name.replace(/[^a-z0-9]+/gi, '-').slice(0, 36) + '.json');
@@ -513,6 +562,11 @@ export default function App() {
       setChopDeck(nextDeck);
       setChopMarkers(normalizeMarkers(data.chopMarkers));
       setFlipChops(data.flipChops === true);
+      setSourceBpm(safeTempo(data.sourceBpm));
+      setBeatBars([1,2,4].includes(data.beatBars) ? data.beatBars : 4);
+      setGridStart(Math.max(0,Math.min(180, Number(data.gridStart) || 0)));
+      setSyncMode(['off','tape','grain'].includes(data.syncMode) ? data.syncMode : 'off');
+      setBpmEstimate(null);
       setSelectedSlice(0);
       if (nextDeck) {
         try {
@@ -601,7 +655,7 @@ export default function App() {
             <div className="brand-sub">THE INFINITE GROOVE MACHINE</div></div>
         </div>
         <div className="topbar-center"><span className="live-light" /> BROWSER AUDIO WORKSTATION
-          <span className="topbar-divider" /> V 0.3.0 <span className="beta-pill">ALPHA</span>
+          <span className="topbar-divider" /> V 0.4.0 <span className="beta-pill">ALPHA</span>
         </div>
         <a className="github-link" href="https://github.com/MichaelWave369/PhiBox" target="_blank" rel="noreferrer">
           SOURCE CODE <span aria-hidden="true">↗</span>
@@ -767,7 +821,7 @@ export default function App() {
           <div className="chop-shop-head">
             <div>
               <span className="overline">07 / BREAK LABORATORY</span>
-              <h2>Φ Sample Chop Shop <span className="chop-tag">R3 · NON-DESTRUCTIVE</span></h2>
+              <h2>Φ Sample Chop Shop <span className="chop-tag">R4 · BREAK INTELLIGENCE</span></h2>
               <p>Bring a break. Find the pocket. Slice it into sixteen new instruments.</p>
             </div>
             <button type="button" className="chop-load-button"
@@ -782,6 +836,44 @@ export default function App() {
             <span className="chop-source-label"><i className={wavePeaks.length ? 'active' : ''} />
               {chopDeck ? chopDeck.name : 'NO AUDIO SOURCE LOADED'}</span>
             <span>{chopSeconds ? chopSeconds.toFixed(2) + ' SEC' : '-- SEC'} · 16 CHOPS · 1 SOURCE FILE</span>
+          </div>
+          <div className="break-intelligence-panel">
+            <div className="break-analyze-group">
+              <div>
+                <span className="overline">R4 / RHYTHM INTELLIGENCE</span>
+                <strong>Find the real hits</strong>
+                <small>Detect sharp attacks and estimate the source BPM. Nothing changes on the pads until you route again.</small>
+              </div>
+              <button type="button" disabled={!wavePeaks.length} onClick={analyzeBreak}>
+                ✳ SMART TRANSIENTS + BPM
+              </button>
+            </div>
+            <div className="break-grid-controls">
+              <label>SOURCE BPM
+                <input type="number" aria-label="Source sample BPM" min="65" max="190" step="1" value={sourceBpm}
+                  onChange={e => setSourceBpm(safeTempo(e.target.value,sourceBpm))}/>
+              </label>
+              <label>BARS
+                <select value={beatBars} aria-label="Number of source bars to slice"
+                  onChange={e => setBeatBars(Number(e.target.value))}>
+                  <option value="1">1 BAR</option><option value="2">2 BARS</option><option value="4">4 BARS</option>
+                </select>
+              </label>
+              <label>START OFFSET (SECONDS)
+                <input type="number" aria-label="Start offset into source in seconds" min="0"
+                  max={Math.max(0,chopSeconds-beatBars*4*60/sourceBpm).toFixed(2)}
+                  step="0.01" value={gridStart}
+                  onChange={e => setGridStart(Math.max(0,Math.min(chopSeconds,Number(e.target.value)||0)))}/>
+              </label>
+              <button type="button" disabled={!wavePeaks.length} className="grid-apply-button"
+                onClick={applyBeatGrid}>▦ SLICE ON BEAT GRID</button>
+            </div>
+            <div className="break-analysis-foot">
+              <span>{bpmEstimate ?
+                'DETECTED ' + bpmEstimate.bpm + ' BPM / CONFIDENCE ' + Math.round(bpmEstimate.confidence*100) + '%' :
+                'BPM ESTIMATE: NOT ANALYZED'}</span>
+              <span>BEAT GRID EXTRACTS AN ACTUAL BAR WINDOW FROM YOUR SOURCE</span>
+            </div>
           </div>
           <div className="chop-drop-zone" onDragOver={e => e.preventDefault()}
             onDrop={e => { e.preventDefault(); loadBreak(e.dataTransfer.files?.[0]); }}>
@@ -805,6 +897,25 @@ export default function App() {
               <span>{chopSeconds ? (chopMarkers[selectedSlice] * chopSeconds).toFixed(2) : '0.00'}s →
                 {chopSeconds ? (chopMarkers[selectedSlice + 1] * chopSeconds).toFixed(2) : '0.00'}s</span>
             </div>
+          </div>
+          <div className="tempo-match-deck">
+            <div>
+              <span className="overline">R4 / TEMPO MATCH</span>
+              <strong>Groove at the project tempo</strong>
+              <small>Source BPM {sourceBpm} → project BPM {bpm}.
+                OFF leaves existing chops untouched. TAPE changes speed and pitch.
+                GRAIN uses overlap-add for approximate pitch preservation and may sound textured.</small>
+            </div>
+            <div className="sync-mode-picker" role="group" aria-label="Chopped sample tempo matching mode">
+              {[['off','OFF'],['tape','TAPE'],['grain','GRAIN']].map(([value,label]) =>
+                <button type="button" key={value} onClick={()=>setSyncMode(value)}
+                  aria-pressed={syncMode===value} className={syncMode===value?'active':''}>{label}</button>)}
+            </div>
+            <span className="tempo-match-note">
+              {syncMode==='off' ? 'CLASSIC ORIGINAL PLAYBACK' :
+                syncMode==='tape' ? 'TEMPO LOCK: SPEED + PITCH SHIFT TOGETHER' :
+                  'GRAIN: WINDOWED OVERLAP-ADD, BEST ON SHORT RHYTHMIC CHOPS'}
+            </span>
           </div>
           <div className="chop-routing">
             <div className="chop-routing-copy">
