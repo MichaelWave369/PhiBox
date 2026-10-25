@@ -28,3 +28,91 @@
 @media(max-width:800px){.topbar{padding:14px 17px}.workspace{padding:23px 15px}.page-intro h1{letter-spacing:-2px}.visual-panel{display:none}.transport{flex-wrap:wrap}.project-label{flex:1 1 100%}.transport-main{order:1}.tempo-block{order:2}.swing-block{order:3;min-width:100px;flex:1}.lower-grid,.utilities-grid{grid-template-columns:1fr}.utility-panel .voice-controls{flex-wrap:nowrap}.studio-footer{flex-direction:column;align-items:flex-start}.studio-footer .status-text{max-width:100%}}
 @media(max-width:540px){.brand-mark{width:42px;height:42px}.brand-word{font-size:22px}.brand-sub{font-size:7px}.github-link{padding:10px 8px;font-size:9px}.github-link span{display:none}.page-intro p{font-size:12px}.panel-heading h2{font-size:20px}.panel-count{display:none}.pads-grid{gap:7px}.pad{padding:7px;border-radius:8px;aspect-ratio:.94}.pad-top{font-size:8px}.pad-middle{font-size:17px}.pad-name{font-size:9px}.pad-key{font-size:7px;right:6px;bottom:6px}.selected-editor{grid-template-columns:1fr}.sample-actions{grid-column:auto}.sequence-meta{gap:8px;flex-wrap:wrap}.sequence-meta>div{flex:1 0 40%}.knob-rack{flex-wrap:wrap;row-gap:19px}.knob-block{min-width:19%}.voice-controls{flex-direction:column;align-items:stretch!important}.studio-footer{font-size:8px}.wave-options button span{font-size:7px}}
 @media(prefers-reduced-motion:reduce){*,*:before,*:after{animation-duration:.01ms!important;transition-duration:.01ms!important}}
+
+
+/* PhiBox R2: performance recorder, step velocities, and the live arrangement strip. */
+.step-cell.on i { opacity: var(--step-strength, 1); }
+.step-cell.step-editing { outline: 1px solid #e6b5ed; outline-offset: 2px; }
+.capture-strip {
+  display: flex; align-items: center; flex-wrap: wrap; gap: 13px;
+  margin-top: 19px; border-top: 1px solid #393141; padding-top: 16px;
+}
+.overdub-toggle {
+  min-height: 43px; display: inline-flex; align-items: center; gap: 9px;
+  padding: 10px 16px; border-radius: 8px; border: 1px solid #b77273;
+  color: #f9c0b5; background: #512d39; font: 700 10px 'DM Mono',monospace;
+  letter-spacing: .55px; white-space: nowrap;
+}
+.overdub-toggle:hover { background: #724050; }
+.overdub-toggle.is-armed {
+  background: #a13e48; border-color: #ff9c85; color: #fff6df;
+  box-shadow: 0 0 18px #eb66743f;
+  animation: capture-pulse 1.7s ease-in-out infinite;
+}
+@keyframes capture-pulse { 50% { box-shadow: 0 0 18px #ff735e85; } }
+.capture-select,.capture-velocity {
+  display: flex; align-items: center; gap: 8px; color: #a99aab;
+  font: 9px 'DM Mono',monospace; letter-spacing: .65px;
+}
+.capture-select select {
+  border-radius: 5px; color: #efd6ec; background: #2f2939;
+  border: 1px solid #5d455f; padding: 9px 7px; cursor: pointer;
+}
+.capture-select select option { background: #292433; }
+.capture-velocity { flex: 1; min-width: 165px; justify-content: flex-end; }
+.capture-velocity input { max-width: 105px; min-width: 45px; width: 100%; }
+.capture-velocity b { color: #f6c88c; min-width: 33px; font: 10px 'DM Mono',monospace; }
+.velocity-editor {
+  display: flex; align-items: center; gap: 15px; flex-wrap: wrap;
+  border: 1px solid #443749; border-radius: 7px; padding: 12px 13px;
+  margin-top: 13px; background: #241f2c;
+}
+.velocity-editor > span {
+  font: 9px 'DM Mono',monospace; letter-spacing: .5px; color: #d7bedc;
+  white-space: nowrap;
+}
+.velocity-editor input { flex: 1; min-width: 80px; max-width: 280px; }
+.velocity-editor b { font: 11px 'DM Mono',monospace; color: #f1c5a0; min-width: 33px; text-align: right; }
+.arranger-panel { margin-top: 18px; padding: 21px 24px; border-color: #45334b; }
+.arranger-head { display: flex; align-items: center; justify-content: space-between; gap: 15px; }
+.arranger-head h2 { font-size: 23px; margin: 4px 0 5px; letter-spacing: -.8px; }
+.arranger-head p { color: #908795; margin: 0; font-size: 12px; }
+.song-toggle {
+  display: inline-flex; align-items: center; justify-content: center;
+  min-height: 40px; gap: 10px; border: 1px solid #52455d; border-radius: 7px;
+  background: #2b2634; color: #ae9fae; padding: 10px 13px;
+  white-space: nowrap; font: 10px 'DM Mono',monospace;
+}
+.song-toggle.active { background: #43324f; color: #e6c3f2; border-color: #ae7ed3; }
+.song-toggle-led { display: block; width: 7px; height: 7px; border-radius: 50%; background: #706775; }
+.song-toggle.active .song-toggle-led { background: #bdfa9d; box-shadow: 0 0 10px #bdfa9d; }
+.chain-grid { display: flex; flex-wrap: wrap; gap: 9px; margin: 17px 0 14px; }
+.chain-slot {
+  display: flex; flex-direction: column; align-items: flex-start; justify-content: space-between;
+  gap: 10px; width: 75px; min-height: 73px; padding: 10px;
+  color: #b9acbd; background: linear-gradient(135deg,#31293b,#26242e);
+  border: 1px solid #4f405a; border-radius: 8px; text-align: left;
+}
+.chain-slot span { font: 9px 'DM Mono',monospace; letter-spacing: .5px; }
+.chain-slot b { font-size: 21px; color: #d1a6ed; line-height: 1; }
+.chain-slot:hover { border-color: #dfadff; filter: brightness(1.13); }
+.chain-slot.current { border-color: #f9c68d; background: linear-gradient(135deg,#604057,#3c2d46); box-shadow: inset 0 0 0 1px #f9bd7d,0 0 19px #f9b36b1e; }
+.chain-slot.current b { color: #ffcc9c; }
+.arranger-actions { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 12px; padding-top: 12px; border-top: 1px solid #35303d; }
+.arranger-actions > span { font: 9px 'DM Mono',monospace; color: #958798; letter-spacing: .6px; }
+.arranger-actions > div { display: flex; flex-wrap: wrap; gap: 8px; }
+.arranger-actions button { background: #312a39; color: #d7bedb; border: 1px solid #645069; padding: 9px 12px; border-radius: 6px; font: 10px 'DM Mono',monospace; }
+.arranger-actions button:hover:not(:disabled) { background: #48364e; }
+.arranger-actions button:disabled { opacity: .36; cursor: default; }
+@media (max-width: 800px) {
+  .arranger-panel { padding: 19px; }
+  .arranger-head { align-items: flex-start; }
+  .chain-slot { width: 66px; min-height: 66px; }
+}
+@media (max-width: 540px) {
+  .arranger-head { flex-direction: column; }
+  .capture-velocity { justify-content: flex-start; }
+  .velocity-editor > span { white-space: normal; line-height: 1.5; }
+  .chain-grid { gap: 7px; }
+}
+@media (prefers-reduced-motion: reduce) { .overdub-toggle.is-armed { animation: none; } }
