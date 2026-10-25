@@ -110,6 +110,7 @@ function Icon({ name, size = 18 }) {
     shuffle: <><path d="m17 3 4 4-4 4" /><path d="M3 17h4l10-10h4M3 7h4l2 2m4 6 4 2h4m-4 0 4-4" /></>,
     trash: <><path d="M4 7h16M9 7V4h6v3M6 7l1 14h10l1-14M10 11v6m4-6v6" /></>,
     mic: <><rect x="9" y="2" width="6" height="13" rx="3" /><path d="M5 10a7 7 0 0 0 14 0M12 17v5m-4 0h8" /></>,
+    layers: <><path d="m12 2 9 5-9 5-9-5 9-5z" /><path d="m3 12 9 5 9-5M3 17l9 5 9-5" /></>,
     power: <><path d="M12 2v10" /><path d="M5 5a9 9 0 1 0 14 0" /></>,
   };
   return <svg width={size} height={size} fill="none" stroke="currentColor" strokeWidth="1.8"
