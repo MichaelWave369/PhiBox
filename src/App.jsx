@@ -819,6 +819,17 @@ export default function App() {
       setPadVelocity(clamp(data.padVelocity ?? DEFAULT_VELOCITY, 0.05, 1));
       setBpm(clamp(data.bpm, 40, 240)); setSwing(clamp(data.swing, 0, 70));
       setFx({ ...d.fx, ...data.fx }); setSynth({ ...d.synth, ...data.synth });
+      if (Array.isArray(data.loopSettings)) {
+        const imported=normalizeLoops(data.loopSettings);
+        const refreshed=imported.map((settings,i)=>({
+          ...settings,
+          hasAudio:audio.loopBuffers.has(i),
+          bpm:audio.loopBuffers.get(i)?.bpm ?? settings.bpm,
+          bars:audio.loopBuffers.get(i)?.bars ?? settings.bars
+        }));
+        setLoops(refreshed);
+        if(audio.ctx)refreshed.forEach((settings,i)=>audio.setLoopTrack(i,settings));
+      }
       await clearSamples();
       persistedSamples.current = [];
       audio.samples.clear();
