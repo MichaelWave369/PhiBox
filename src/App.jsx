@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { audio } from './audio/engine.js';
-import { clearSamples, getSamples, removeSample, storeSample, saveChopSource, getChopSources } from './audio/storage.js';
+import { clearSamples, getSamples, removeSample, storeSample, saveChopSource, getChopSources, saveLoopTake, getLoopTakes, deleteLoopTake } from './audio/storage.js';
 import {
   PAD_PRESETS, HOTKEYS, makePatternBanks, makeEmptyPattern, isPattern,
   midiToHz, noteName, clamp
@@ -8,12 +8,22 @@ import {
 import { DEFAULT_VELOCITY, velocitiesFromBanks, normalizeVelocities, sanitizeChain } from './audio/performance.js';
 import { equalMarkers, normalizeMarkers, normalizeChop, sliceFor, moveMarker, chopAssignments, sourceFingerprint } from './audio/chops.js';
 import { beatGridMarkers, safeTempo } from './audio/break-intelligence.js';
+import { LOOP_DEFAULTS, normalizeLoops, encodeWav } from './audio/loop-utils.js';
 import ChopWaveform from './components/ChopWaveform.jsx';
 
 const KEY = 'phibox-project-v1';
 const DEFAULT_FX = { volume: 0.78, cutoff: 14000, drive: 0.08, delay: 0.16, reverb: 0.12 };
 const DEFAULT_SYNTH = { waveform: 'sawtooth', attack: 0.015, decay: 0.25, sustain: 0.46, release: 0.3 };
-const freshPads = () => PAD_PRESETS.map(p => ({ ...p, tune: 0 }));
+const DEFAULT_PAD_FX = { cutoff: 20000, pan: 0, delay: 0, reverb: 0 };
+function safePadFx(raw) {
+  return {
+    cutoff: clamp(raw?.cutoff ?? 20000, 200, 20000),
+    pan: Math.max(-1,Math.min(1,Number(raw?.pan) || 0)),
+    delay: clamp(raw?.delay,0,.75),
+    reverb: clamp(raw?.reverb,0,.75)
+  };
+}
+const freshPads = () => PAD_PRESETS.map(p => ({ ...p, tune: 0, padFx:{...DEFAULT_PAD_FX} }));
 const factory = () => {
   const banks = makePatternBanks();
   return {
@@ -22,7 +32,7 @@ const factory = () => {
     bank: 0, bpm: 108, swing: 12, fx: { ...DEFAULT_FX }, synth: { ...DEFAULT_SYNTH },
     chain: [0, 1, 0, 2], songMode: false, quantize: '1/16', padVelocity: DEFAULT_VELOCITY,
     chopDeck: null, chopMarkers: equalMarkers(), flipChops: false,
-    sourceBpm: 120, beatBars: 4, gridStart: 0, syncMode: 'off'
+    sourceBpm: 120, beatBars: 4, gridStart: 0, syncMode: 'off', loops: LOOP_DEFAULTS(), loopBars: 1
   };
 };
 function loadProject() {
@@ -39,6 +49,7 @@ function loadProject() {
           sampleName: typeof data.pads[i]?.sampleName === 'string' ? data.pads[i].sampleName.slice(0, 60) : undefined,
           chop: normalizeChop(data.pads[i]?.chop),
           chopName: typeof data.pads[i]?.chopName === 'string' ? data.pads[i].chopName.slice(0, 60) : undefined,
+          padFx: safePadFx(data.pads[i]?.padFx),
         })),
         banks: data.banks, velocities: normalizeVelocities(data.velocities, data.banks),
         bank: clamp(data.bank, 0, 3),
@@ -51,6 +62,7 @@ function loadProject() {
         beatBars: [1,2,4].includes(data.beatBars) ? data.beatBars : 4,
         gridStart: Math.max(0, Math.min(180, Number(data.gridStart) || 0)),
         syncMode: ['off','tape','grain'].includes(data.syncMode) ? data.syncMode : 'off',
+        loops: normalizeLoops(data.loops), loopBars: [1,2,4].includes(data.loopBars) ? data.loopBars : 1,
         quantize: ['1/16', '1/8', '1/4'].includes(data.quantize) ? data.quantize : '1/16',
         padVelocity: clamp(data.padVelocity ?? DEFAULT_VELOCITY, 0.05, 1),
         bpm: clamp(data.bpm, 40, 240), swing: clamp(data.swing, 0, 70),
@@ -166,6 +178,9 @@ export default function App() {
   const [gridStart, setGridStart] = useState(initial.gridStart);
   const [syncMode, setSyncMode] = useState(initial.syncMode);
   const [bpmEstimate, setBpmEstimate] = useState(null);
+  const [loops, setLoops] = useState(initial.loops);
+  const [loopBars, setLoopBars] = useState(initial.loopBars);
+  const [captureState, setCaptureState] = useState(null);
   const [bpm, setBpm] = useState(initial.bpm);
   const [swing, setSwing] = useState(initial.swing);
   const [fx, setFx] = useState(initial.fx);
@@ -185,6 +200,7 @@ export default function App() {
   const chopFileRef = useRef(null);
   const loadingRef = useRef(null);
   const chopDeckRef = useRef(chopDeck);
+  const loopsRef = useRef(loops);
   const projectRef = useRef(null);
   const targetRef = useRef(0);
   const loadedRef = useRef(false);
@@ -203,6 +219,7 @@ export default function App() {
   bankRef.current = bank;
   padsRef.current = pads;
   chopDeckRef.current = chopDeck;
+  loopsRef.current = loops;
   chainRef.current = chain;
   songModeRef.current = songMode;
   armedRef.current = armed;
@@ -212,10 +229,10 @@ export default function App() {
   useEffect(() => {
     localStorage.setItem(KEY, JSON.stringify({
       name, pads, banks, velocities, bank, bpm, swing, fx, synth, chain, songMode, quantize, padVelocity,
-      chopDeck, chopMarkers, flipChops, sourceBpm, beatBars, gridStart, syncMode
+      chopDeck, chopMarkers, flipChops, sourceBpm, beatBars, gridStart, syncMode, loops, loopBars
     }));
   }, [name, pads, banks, velocities, bank, bpm, swing, fx, synth, chain, songMode, quantize,
-    padVelocity, chopDeck, chopMarkers, flipChops, sourceBpm, beatBars, gridStart, syncMode]);
+    padVelocity, chopDeck, chopMarkers, flipChops, sourceBpm, beatBars, gridStart, syncMode, loops, loopBars]);
 
   useEffect(() => {
     return () => { audio.stop(); audio.stopVocoder(); audio.stopChopPreview(); };
@@ -231,8 +248,25 @@ export default function App() {
     setAudioReady(true);
     if (!loadingRef.current) {
       loadingRef.current = (async () => {
-        const [samples, sources] = await Promise.all([getSamples(), getChopSources()]);
+        const [samples, sources, takes] = await Promise.all([getSamples(), getChopSources(), getLoopTakes()]);
         persistedSamples.current = samples;
+        const recovered = new Set();
+        for(const take of takes) {
+          try {
+            if (!Number.isInteger(take.id)||take.id<0||take.id>3||!take.left?.length||
+              take.left.length!==take.right?.length)continue;
+            const buffer=audio.ctx.createBuffer(2,take.left.length,take.sampleRate);
+            buffer.copyToChannel(take.left,0);buffer.copyToChannel(take.right,1);
+            audio.setLoopBuffer(take.id,buffer,take.bpm,take.bars);
+            const settings=loopsRef.current[take.id];
+            audio.setLoopTrack(take.id,settings);
+            recovered.add(take.id);
+          } catch {setStatus('ONE SAVED LOOP COULD NOT BE RESTORED');}
+        }
+        setLoops(old=>old.map((track,i)=>({
+          ...track,hasAudio:recovered.has(i),
+          ...(recovered.has(i) ? { bars:audio.loopBuffers.get(i).bars,bpm:audio.loopBuffers.get(i).bpm } : {})
+        })));
         for (const entry of samples) {
           try { await audio.loadSample(entry.index, entry.file); }
           catch { setStatus('ONE SAVED SAMPLE COULD NOT BE RESTORED'); }
@@ -535,8 +569,9 @@ export default function App() {
   };
 
   const onExport = () => {
-    const project = { version: 4, name, pads, banks, velocities, bank, bpm, swing, fx, synth, chain, songMode, quantize, padVelocity,
+    const project = { version: 5, name, pads, banks, velocities, bank, bpm, swing, fx, synth, chain, songMode, quantize, padVelocity,
       chopDeck, chopMarkers, flipChops, sourceBpm, beatBars, gridStart, syncMode,
+      loopBars, loopSettings:loops.map(({name,muted,volume,bars,bpm})=>({name,muted,volume,bars,bpm})),
       notice: 'Audio files are NOT embedded in JSON. Back up your source breaks and pad samples; reimport them on other devices.' };
     download(new Blob([JSON.stringify(project, null, 2)], { type: 'application/json' }),
       'PhiBox-' + name.replace(/[^a-z0-9]+/gi, '-').slice(0, 36) + '.json');
@@ -555,7 +590,8 @@ export default function App() {
       setPads(d.pads.map((p, i) => ({
         ...p, tune: clamp(data.pads[i]?.tune, -12, 12),
         chop: normalizeChop(data.pads[i]?.chop),
-        chopName: typeof data.pads[i]?.chopName === 'string' ? data.pads[i].chopName.slice(0, 60) : undefined
+        chopName: typeof data.pads[i]?.chopName === 'string' ? data.pads[i].chopName.slice(0, 60) : undefined,
+        padFx: safePadFx(data.pads[i]?.padFx)
       })));
       const nextDeck = typeof data.chopDeck?.id === 'string' && /^[a-f0-9]{64}$/.test(data.chopDeck.id)
         ? { id: data.chopDeck.id, name: String(data.chopDeck.name || 'BREAK').slice(0, 100) } : null;
