@@ -1,12 +1,13 @@
 import React,{useMemo,useState} from 'react';
 import { PRESETS } from '../chippydip/audio.ts';
 import {CHIP_CATEGORIES,CHIP_PATCHES,bankForPreset,setChipStep} from '../audio/instrument-state.js';
+import PatchPortal from './PatchPortal.jsx';
 
 const LABELS={nes:'NES CLASSICS',gameboy:'POCKET WAVE',genesis:'GENESIS FM',snes:'SNES SAMPLE',double:'DOUBLE DIP'};
 const PHI_NOTE_NAMES=['C','C♯','D','D♯','E','F','F♯','G','G♯','A','A♯','B'];
 const noteLabel=n=>PHI_NOTE_NAMES[n%12]+(Math.floor(n/12)-1);
 
-export default function PhiFlexRack({rack,onChange,playhead,playing,onAudition,onRelease}){
+export default function PhiFlexRack({rack,onChange,playhead,playing,onAudition,onRelease,onImportPattern,onExportPattern}){
   const [query,setQuery]=useState('');
   const [favoritesOnly,setFavoritesOnly]=useState(false);
   const filtered=useMemo(()=>PRESETS.filter(p=>{
@@ -147,6 +148,7 @@ export default function PhiFlexRack({rack,onChange,playhead,playing,onAudition,o
         </div>
         <small className="phiflex-sequence-note">CHIP MODE + STEP LANE ON: SCHEDULED WITH THE SAME AUDIO CLOCK AS THE DRUMS. PITCH LANE IS SAVED IN PROJECT JSON.</small>
       </div>
+      <PatchPortal rack={rack} onChange={onChange} onImport={onImportPattern} onExport={onExportPattern}/>
       <div className="phiflex-credit">CHIPPYDIP MIT-licensed source DSP · ORIGINAL PATCHES ·
         <a href="https://github.com/MichaelWave369/ChippyDip" target="_blank" rel="noreferrer">
           SOURCE AND NATIVE VST3 DEVELOPMENT ↗</a>
