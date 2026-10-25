@@ -1075,7 +1075,7 @@ export default function App() {
 
         <section className="panel loop-forge-panel">
           <div className="forge-header">
-            <div><span className="overline">08 / LIVE PERFORMANCE LAB · R5</span>
+            <div><span className="overline">08 / LIVE PERFORMANCE LAB · R7</span>
               <h2>Φ Loop Forge <span className="forge-flag">4 TRACK STUDIO</span></h2>
               <p>Record your live pads into independent tracks, then resample the entire groove back into the Chop Shop.</p>
             </div>
@@ -1083,13 +1083,86 @@ export default function App() {
               {captureState ? (captureState.stage+' / '+(captureState.source==='master'?'MASTER':'TRACK '+(captureState.track+1))).toUpperCase() :
                 playing ? 'TRANSPORT RUNNING' : 'READY TO LOOP'}</div>
           </div>
+          <div className="live-room">
+            <div className="live-room-heading">
+              <div><span className="overline">R7 / LIVE ROOM · AUDIO INPUT</span>
+                <strong>Microphone / Instrument Interface</strong>
+                <p>Connect a mic or line input, record without monitoring, or enable headphone monitoring explicitly.</p>
+              </div>
+              <span className={'live-input-indicator '+(inputEnabled?'active':'')}>
+                <i/>{inputEnabled?'INPUT CONNECTED':'INPUT DISCONNECTED'}</span>
+            </div>
+            <div className="live-input-toolbar">
+              {!inputEnabled?<button type="button" className="live-connect" disabled={!!captureState}
+                onClick={()=>connectLiveInput(null)}><Icon name="mic" size={16}/> CONNECT INPUT</button>:
+                <>
+                  <button type="button" className="live-disconnect" disabled={!!captureState}
+                    onClick={disconnectLiveInput}>DISCONNECT INPUT</button>
+                  <label>INPUT DEVICE
+                    <select aria-label="Audio input device" value={inputDeviceId}
+                      disabled={!!captureState} onChange={e=>connectLiveInput(e.target.value)}>
+                      {!inputDevices.some(d=>d.id===inputDeviceId)&&<option value={inputDeviceId}>{inputName||'CURRENT INPUT'}</option>}
+                      {inputDevices.map(device=><option key={device.id} value={device.id}>{device.label}</option>)}
+                    </select>
+                  </label>
+                  <label>INPUT GAIN
+                    <input type="range" min="0" max="1.5" step=".05" value={inputGain}
+                      aria-label="Live input recording gain" onChange={e=>changeInputGain(Number(e.target.value))}/>
+                    <b>{Math.round(inputGain*100)}%</b>
+                  </label>
+                  <button type="button" aria-pressed={inputMonitor}
+                    className={'live-monitor '+(inputMonitor?'on':'')} onClick={()=>changeMonitor(!inputMonitor)}>
+                    <Icon name="power" size={13}/> {inputMonitor?'MONITOR ON':'MONITOR OFF'}</button>
+                </>
+              }
+              <div className="live-input-meter" role="meter" aria-label="Input peak level" aria-valuemin={0}
+                aria-valuemax={100} aria-valuenow={Math.round(inputLevel*100)}>
+                <span style={{width:Math.round(inputLevel*100)+'%'}}/></div>
+            </div>
+            <div className="live-input-warning">
+              <span>{inputEnabled?inputName:'Input remains disconnected until you grant browser microphone permission.'}</span>
+              <span>HEADPHONES REQUIRED FOR SAFE MONITORING · INPUT AUDIO IS NOT UPLOADED</span>
+            </div>
+          </div>
+          <div className="punch-panel">
+            <div className="punch-head">
+              <div><span className="overline">R7 / PUNCH WORKFLOW</span><strong>Replace just the part you choose</strong>
+                <p>Punch records a full loop window internally, replacing only the chosen fraction with short fades.</p></div>
+            </div>
+            <div className="punch-controls">
+              <label>RECORD SOURCE
+                <select value={captureSource} disabled={!!captureState}
+                  aria-label="Loop capture input source" onChange={e=>setCaptureSource(e.target.value)}>
+                  <option value="live">PADS + INPUT</option>
+                  <option value="input">INPUT ONLY</option>
+                </select>
+              </label>
+              <label>PUNCH IN (ZONE)
+                <select value={punchStart} disabled={!!captureState}
+                  aria-label="Punch-in start zone" onChange={e=>setPunchStart(v=>Math.min(Number(e.target.value),punchEnd-1))}>
+                  {Array.from({length:16},(_,i)=><option key={i} value={i}>{String(i+1).padStart(2,'0')}</option>)}
+                </select>
+              </label>
+              <label>PUNCH OUT (AFTER ZONE)
+                <select value={punchEnd} disabled={!!captureState}
+                  aria-label="Punch-out end zone" onChange={e=>setPunchEnd(v=>Math.max(punchStart+1,Number(e.target.value)))}>
+                  {Array.from({length:16},(_,i)=><option key={i} value={i+1}>{String(i+1).padStart(2,'0')}</option>)}
+                </select>
+              </label>
+              <div className="punch-scale" aria-label="Punch area visualization">
+                {Array.from({length:16},(_,i)=><span key={i}
+                  className={i>=punchStart&&i<punchEnd?'selected':''}/>)}
+              </div>
+            </div>
+            <div className="punch-note">16 ZONES SPAN THE ENTIRE LOOP LENGTH (1, 2 OR 4 BARS). PUNCH USES SELECTED SOURCE. MASTER RESAMPLE ALWAYS USES THE PROCESSED MIX.</div>
+          </div>
           <div className="forge-transport">
             <label>LOOP LENGTH
               <select aria-label="Loop capture length in bars" value={loopBars}
                 disabled={!!captureState} onChange={e=>setLoopBars(Number(e.target.value))}>
                 <option value="1">1 BAR</option><option value="2">2 BARS</option><option value="4">4 BARS</option>
               </select></label>
-            <span>RECORDING STARTS ON THE NEXT BAR · SOURCE: LIVE INSTRUMENT BUS</span>
+            <span>QUEUED TO THE NEXT BAR · '+(captureSource==='input'?'ISOLATED MIC/LINE INPUT':'PAD + INPUT BUS')+'</span>
             <label className="forge-overdub-level">OVERDUB LAYER LEVEL
               <input type="range" aria-label="Overdub layer gain" min="0" max="1.5" step=".05"
                 value={overdubGain} disabled={!!captureState}
@@ -1102,8 +1175,9 @@ export default function App() {
             {loops.map((loop,index)=>(
               <div key={index} className={'forge-track '+(loop.hasAudio?'has-take':'')}>
                 <div className="forge-track-id"><span>{String(index+1).padStart(2,'0')}</span>
-                  <div className={'forge-meter '+(loop.hasAudio&&!loop.muted&&playing?'active':'')}>
-                    <i/><i/><i/><i/><i/><i/></div></div>
+                  <div className="forge-real-meter" role="meter" aria-label={'Loop '+(index+1)+' peak level'}
+                    aria-valuemin={0} aria-valuemax={100} aria-valuenow={Math.round(trackLevels[index]*100)}>
+                    <span style={{width:Math.round(trackLevels[index]*100)+'%'}}/></div></div>
                 <div className="forge-track-content">
                   <strong>{loop.name}</strong>
                   <small>{loop.hasAudio ? loop.bars+' BAR(S) · '+loop.bpm+' BPM · LOCAL TAKE' :
@@ -1112,12 +1186,20 @@ export default function App() {
                       aria-label={'Loop '+(index+1)+' volume'} value={loop.volume}
                       onChange={e=>changeLoopSettings(index,{volume:Number(e.target.value)})}/>
                     <span>{Math.round(loop.volume*100)}%</span></label>
+                  <label>PAN <input type="range" min="-1" max="1" step=".02"
+                      aria-label={'Loop '+(index+1)+' stereo pan'} value={loop.pan}
+                      onChange={e=>changeLoopSettings(index,{pan:Number(e.target.value)})}/>
+                    <span>{loop.pan===0?'C':loop.pan<0?'L'+Math.round(-loop.pan*100):'R'+Math.round(loop.pan*100)}</span></label>
                 </div>
                 <div className="forge-track-actions">
                   <button type="button" className={loop.muted?'is-muted':''}
                     aria-label={'Mute loop track '+(index+1)} aria-pressed={loop.muted}
                     onClick={()=>changeLoopSettings(index,{muted:!loop.muted})}>
                     {loop.muted?'UNMUTE':'MUTE'}</button>
+                  <button type="button" className={loop.solo?'forge-solo-active':''}
+                    aria-pressed={loop.solo} aria-label={'Solo loop track '+(index+1)}
+                    onClick={()=>changeLoopSettings(index,{solo:!loop.solo})}>
+                    {loop.solo?'SOLO ON':'SOLO'}</button>
                   <button type="button" className="forge-track-record"
                     disabled={!!captureState} onClick={()=>captureLoop(index)}>
                     <Icon name="record" size={13}/> {loop.hasAudio?'REPLACE':'REC LOOP'}</button>
@@ -1125,6 +1207,9 @@ export default function App() {
                     disabled={!!captureState||!loop.hasAudio} onClick={()=>captureLoop(index,true)}
                     title={'Add live performance onto Loop '+(index+1)+' without erasing the existing take'}>
                     <Icon name="layers" size={13}/> OVERDUB</button>
+                  <button type="button" className="forge-punch-button" disabled={!!captureState||!loop.hasAudio}
+                    onClick={()=>captureLoop(index,false,true)} title="Replace the chosen punch-in/out section only">
+                    PUNCH IN/OUT</button>
                   <button type="button" className="forge-undo-button"
                     disabled={!!captureState||!loopHistory[index].undo}
                     onClick={()=>toggleLoopHistory(index,'undo')}>UNDO</button>
@@ -1151,7 +1236,7 @@ export default function App() {
           </div>
           <div className="forge-footer">
             <span>LOOP TAKES ARE SAVED ONLY ON THIS DEVICE · JSON EXPORT DOES NOT INCLUDE AUDIO</span>
-            <span>MASTER RESAMPLE INCLUDES ACTIVE LOOPS · LIVE TRACK CAPTURE EXCLUDES THEM</span>
+            <span>MASTER RESAMPLE INCLUDES ACTIVE LOOPS · INPUT-ONLY CAPTURE BYPASSES PAD SOUNDS</span>
           </div>
         </section>
 
