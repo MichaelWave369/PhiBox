@@ -51,6 +51,12 @@ Loop tracks capture the live source while master resampling includes the running
 
 Read the [Loop Forge guide](docs/LOOP_FORGE.md) for recording steps, limitations and device-local storage.
 
+## R6 / The Overdub Deck
+
+Loop Forge can now **overdub onto an existing track** without destroying its previous take. R6 adds bar-aligned stereo PCM layering with an adjustable overdub level, single-level **UNDO / REDO** per track, and **WAV export** for individual loop lanes. Undo histories are temporary (RAM-only); the currently committed audio remains in IndexedDB.
+
+Read [R6 Overdub Deck manual](docs/OVERDUB_DECK.md) for the practical workflow and monitoring caveat: the live capture input still includes playing sequencer pads, so mute duplicated patterns when overdubbing.
+
 ## Storage and privacy
 
 PhiBox stores pattern banks, FX and synth parameters in **localStorage**, and any imported sample audio blobs in **IndexedDB**. Samples are processed locally. No account, server or telemetry is required to play.
