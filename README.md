@@ -65,6 +65,14 @@ New **PUNCH IN/OUT** controls replace a user-selected part of an existing 1/2/4-
 
 [Read the R7 Live Room user guide](docs/LIVE_ROOM.md) for setup and feedback safety. Input recordings and loop audio stay device-local; JSON project exports do not contain PCM samples.
 
+## R8 / ΦFLEX + ChippyDip Instrument Bay
+
+The new **ΦFLEX** preset synthesizer uses the real, MIT-licensed [ChippyDip](https://github.com/MichaelWave369/ChippyDip) Web Audio factory engines: NES pulse/triangle/noise, Game Boy wavetables, Genesis-style 4-op FM, and SNES-style generated sample instruments. **DOUBLE DIP** layers all four chip families. Choose patches by category, search, star favorites, set 4-layer balances and transpositions, and sequence notes using a 16-step **Pitch Lane**.
+
+ΦFLEX routes to the **same PhiBox mixer, effects and live loop recorder** as the existing oscillator. You can switch back to the original Oscillator Lab instantly, and legacy projects default to it. Open the [full ChippyDip Lab](https://michaelwave369.github.io/ChippyDip/) for its own sound editors and ongoing native/VST3 development.
+
+[Read the full R8 integration and usage guide](docs/PHIFLEX_CHIPPYDIP.md), including original-source attribution and patch persistence details. The PhiBox browser app is not a VST3 plugin.
+
 ## Storage and privacy
 
 PhiBox stores pattern banks, FX and synth parameters in **localStorage**, and any imported sample audio blobs in **IndexedDB**. Samples are processed locally. No account, server or telemetry is required to play.

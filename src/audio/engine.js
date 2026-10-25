@@ -5,6 +5,8 @@ import { onsetEnvelope, estimatedTempo, smartTransientMarkers, tempoFactor, grai
 import { barFrames, nextBarTime } from './loop-utils.js';
 import { renderOverdub, toAudioBuffer } from './overdub.js';
 import { renderPunch } from './punch.js';
+import {createVoice as chippyCreateVoice,createLayerVoice as chippyCreateLayerVoice,PRESETS as CHIPPY_PRESETS} from '../chippydip/audio.ts';
+import {makeInstrument,sanitizeInstrument} from './instrument-state.js';
 
 class PhiAudioEngine {
   constructor() {
@@ -23,6 +25,7 @@ class PhiAudioEngine {
     this.swing = 12;
     this.fx = { volume: 0.78, cutoff: 14000, drive: 0.08, delay: 0.16, reverb: 0.12 };
     this.synth = { waveform: 'sawtooth', attack: 0.015, decay: 0.25, sustain: 0.46, release: 0.3 };
+    this.instrumentRack = makeInstrument();
     this.vocoder = null;
     this.recording = false;
     this.stepTimeouts = [];
@@ -394,6 +397,36 @@ class PhiAudioEngine {
     this.synth = { ...this.synth, ...next };
   }
 
+  setInstrumentRack(next) {
+    const safe=sanitizeInstrument(next);
+    const current=this.instrumentRack;
+    const isDifferent=current.mode!==safe.mode || current.presetId!==safe.presetId ||
+      current.family!==safe.family || JSON.stringify(current.layers)!==JSON.stringify(safe.layers);
+    if(isDifferent)for(const note of [...this.voices.keys()])this.noteOff(note);
+    this.instrumentRack=safe;
+  }
+
+  // ChippyDip's original Web Audio voices are connected directly to the
+  // PhiBox dry instrument bus, meaning they enter the mixer, recorder and FX.
+  playChipVoice(note,when,velocity=.86,rack=this.instrumentRack) {
+    const time=Math.max(this.ctx.currentTime,when);
+    const midi=Math.max(36,Math.min(96,Math.round(note)));
+    if(rack.family==='double') {
+      return chippyCreateLayerVoice(this.ctx,this.input,midi,rack.layers,time,velocity);
+    }
+    const preset=CHIPPY_PRESETS.find(p=>p.id===rack.presetId &&
+      (p.chip||'nes')===rack.family);
+    if(!preset)throw new Error('ChippyDip patch missing. Pick a valid factory preset.');
+    return chippyCreateVoice(this.ctx,this.input,midi,preset,time,velocity);
+  }
+
+  triggerInstrumentStep(note,velocity,when,rack) {
+    if(rack?.mode!=='chip'||!Number.isInteger(note)||note<36||note>96)return;
+    const stop=this.playChipVoice(note,when,velocity,rack);
+    const seconds=(60/this.bpm/4)*rack.gate;
+    stop(when+seconds);
+  }
+
   outputGain(time, amplitude, attack = 0.002, decay = 0.24, destination = this.input) {
     const g = this.ctx.createGain();
     const a = Math.max(0.001, attack);
@@ -644,6 +677,11 @@ class PhiAudioEngine {
   async noteOn(note) {
     await this.ensure();
     if (this.voices.has(note)) this.noteOff(note);
+    if(this.instrumentRack.mode==='chip') {
+      const release=this.playChipVoice(note,this.ctx.currentTime,.85);
+      this.voices.set(note,{release});
+      return;
+    }
     const ctx = this.ctx;
     const now = ctx.currentTime;
     const params = this.synth;
@@ -665,6 +703,11 @@ class PhiAudioEngine {
     const voice = this.voices.get(note);
     if (!voice) return;
     const now = this.ctx.currentTime;
+    if(voice.release) {
+      voice.release(now);
+      this.voices.delete(note);
+      return;
+    }
     const release = Math.max(0.02, this.synth.release);
     voice.gain.gain.cancelScheduledValues(now);
     voice.gain.gain.setValueAtTime(Math.max(0.0001, voice.gain.gain.value), now);
@@ -701,6 +744,12 @@ class PhiAudioEngine {
               this.trigger(i, pattern.pads[i], velocity, scheduledAt).catch(console.error);
             }
           }
+        }
+        const instrument=options.getInstrument?.();
+        if(instrument?.mode==='chip' && instrument.sequenceOn &&
+          Number.isInteger(instrument.sequence?.[step])) {
+          try {this.triggerInstrumentStep(instrument.sequence[step],.85,scheduledAt,instrument);}
+          catch(error){console.error('PHIFLEX SEQUENCER',error);}
         }
         this.stepTimeline.push({ index, step, bank, time: scheduledAt });
         this.stepTimeline = this.stepTimeline.filter(event => event.time > this.ctx.currentTime - 5);
