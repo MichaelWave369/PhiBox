@@ -1,11 +1,13 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { audio } from './audio/engine.js';
-import { clearSamples, getSamples, removeSample, storeSample } from './audio/storage.js';
+import { clearSamples, getSamples, removeSample, storeSample, saveChopSource, getChopSources } from './audio/storage.js';
 import {
   PAD_PRESETS, HOTKEYS, makePatternBanks, makeEmptyPattern, isPattern,
   midiToHz, noteName, clamp
 } from './audio/patterns.js';
 import { DEFAULT_VELOCITY, velocitiesFromBanks, normalizeVelocities, sanitizeChain } from './audio/performance.js';
+import { equalMarkers, normalizeMarkers, normalizeChop, sliceFor, moveMarker, chopAssignments, sourceFingerprint } from './audio/chops.js';
+import ChopWaveform from './components/ChopWaveform.jsx';
 
 const KEY = 'phibox-project-v1';
 const DEFAULT_FX = { volume: 0.78, cutoff: 14000, drive: 0.08, delay: 0.16, reverb: 0.12 };
@@ -17,7 +19,8 @@ const factory = () => {
     name: 'FIRST CONTACT', pads: freshPads(), banks,
     velocities: velocitiesFromBanks(banks),
     bank: 0, bpm: 108, swing: 12, fx: { ...DEFAULT_FX }, synth: { ...DEFAULT_SYNTH },
-    chain: [0, 1, 0, 2], songMode: false, quantize: '1/16', padVelocity: DEFAULT_VELOCITY
+    chain: [0, 1, 0, 2], songMode: false, quantize: '1/16', padVelocity: DEFAULT_VELOCITY,
+    chopDeck: null, chopMarkers: equalMarkers(), flipChops: false
   };
 };
 function loadProject() {
@@ -32,10 +35,16 @@ function loadProject() {
           ...p,
           tune: clamp(data.pads[i]?.tune, -12, 12),
           sampleName: typeof data.pads[i]?.sampleName === 'string' ? data.pads[i].sampleName.slice(0, 60) : undefined,
+          chop: normalizeChop(data.pads[i]?.chop),
+          chopName: typeof data.pads[i]?.chopName === 'string' ? data.pads[i].chopName.slice(0, 60) : undefined,
         })),
         banks: data.banks, velocities: normalizeVelocities(data.velocities, data.banks),
         bank: clamp(data.bank, 0, 3),
         chain: sanitizeChain(data.chain), songMode: data.songMode === true,
+        chopDeck: typeof data.chopDeck?.id === 'string' && /^[a-f0-9]{64}$/.test(data.chopDeck.id)
+          ? { id: data.chopDeck.id, name: String(data.chopDeck.name || 'BREAK').slice(0, 100) } : null,
+        chopMarkers: normalizeMarkers(data.chopMarkers),
+        flipChops: data.flipChops === true,
         quantize: ['1/16', '1/8', '1/4'].includes(data.quantize) ? data.quantize : '1/16',
         padVelocity: clamp(data.padVelocity ?? DEFAULT_VELOCITY, 0.05, 1),
         bpm: clamp(data.bpm, 40, 240), swing: clamp(data.swing, 0, 70),
@@ -139,6 +148,13 @@ export default function App() {
   const [chain, setChain] = useState(initial.chain);
   const [songMode, setSongMode] = useState(initial.songMode);
   const [activeBar, setActiveBar] = useState(0);
+  const [chopDeck, setChopDeck] = useState(initial.chopDeck);
+  const [chopMarkers, setChopMarkers] = useState(initial.chopMarkers);
+  const [flipChops, setFlipChops] = useState(initial.flipChops);
+  const [selectedSlice, setSelectedSlice] = useState(0);
+  const [reversePreview, setReversePreview] = useState(false);
+  const [wavePeaks, setWavePeaks] = useState([]);
+  const [chopSeconds, setChopSeconds] = useState(0);
   const [bpm, setBpm] = useState(initial.bpm);
   const [swing, setSwing] = useState(initial.swing);
   const [fx, setFx] = useState(initial.fx);
@@ -155,6 +171,9 @@ export default function App() {
   const [status, setStatus] = useState('READY TO MAKE NOISE');
   const [audioReady, setAudioReady] = useState(false);
   const fileRef = useRef(null);
+  const chopFileRef = useRef(null);
+  const loadingRef = useRef(null);
+  const chopDeckRef = useRef(chopDeck);
   const projectRef = useRef(null);
   const targetRef = useRef(0);
   const loadedRef = useRef(false);
@@ -172,6 +191,7 @@ export default function App() {
   velocityBanksRef.current = velocities;
   bankRef.current = bank;
   padsRef.current = pads;
+  chopDeckRef.current = chopDeck;
   chainRef.current = chain;
   songModeRef.current = songMode;
   armedRef.current = armed;
@@ -180,15 +200,13 @@ export default function App() {
 
   useEffect(() => {
     localStorage.setItem(KEY, JSON.stringify({
-      name, pads, banks, velocities, bank, bpm, swing, fx, synth, chain, songMode, quantize, padVelocity
+      name, pads, banks, velocities, bank, bpm, swing, fx, synth, chain, songMode, quantize, padVelocity,
+      chopDeck, chopMarkers, flipChops
     }));
-  }, [name, pads, banks, velocities, bank, bpm, swing, fx, synth, chain, songMode, quantize, padVelocity]);
+  }, [name, pads, banks, velocities, bank, bpm, swing, fx, synth, chain, songMode, quantize, padVelocity, chopDeck, chopMarkers, flipChops]);
 
   useEffect(() => {
-    let alive = true;
-    getSamples().then(rows => { if (alive) persistedSamples.current = rows; })
-      .catch(() => { if (alive) setStatus('STORAGE UNAVAILABLE: SAMPLES LIVE ONLY'); });
-    return () => { alive = false; audio.stop(); audio.stopVocoder(); };
+    return () => { audio.stop(); audio.stopVocoder(); audio.stopChopPreview(); };
   }, []);
 
   useEffect(() => { audio.setFX(fx); }, [fx]);
@@ -198,21 +216,48 @@ export default function App() {
   const ready = useCallback(async () => {
     await audio.ensure();
     setAudioReady(true);
-    if (!loadedRef.current) {
-      loadedRef.current = true;
-      const rows = persistedSamples.current;
-      for (const entry of rows) {
-        try { await audio.loadSample(entry.index, entry.file); }
-        catch { setStatus('ONE SAVED SAMPLE COULD NOT BE RESTORED'); }
-      }
+    if (!loadingRef.current) {
+      loadingRef.current = (async () => {
+        const [samples, sources] = await Promise.all([getSamples(), getChopSources()]);
+        persistedSamples.current = samples;
+        for (const entry of samples) {
+          try { await audio.loadSample(entry.index, entry.file); }
+          catch { setStatus('ONE SAVED SAMPLE COULD NOT BE RESTORED'); }
+        }
+        const needed = new Set([
+          chopDeckRef.current?.id,
+          ...padsRef.current.map(pad => pad.chop?.sourceId)
+        ].filter(Boolean));
+        for (const item of sources) {
+          if (!needed.has(item.id)) continue;
+          try {
+            const info = await audio.loadChopSource(item.id, item.file);
+            if (item.id === chopDeckRef.current?.id) {
+              setWavePeaks(info.peaks);
+              setChopSeconds(info.duration);
+            }
+          } catch { setStatus('A CHOP SOURCE COULD NOT BE RESTORED'); }
+        }
+      })();
     }
+    try { await loadingRef.current; }
+    catch (error) { loadingRef.current = null; setStatus(error.message || 'LOCAL SAMPLE STORAGE UNAVAILABLE'); }
+  }, []);
+
+  const ensureChopSource = useCallback(async id => {
+    if (audio.chopSources.has(id)) return audio.getChopInfo(id);
+    const stored = (await getChopSources()).find(item => item.id === id);
+    if (!stored) throw new Error('CHOP SOURCE MISSING / RELOAD THE ORIGINAL BREAK');
+    return audio.loadChopSource(id, stored.file);
   }, []);
 
   const triggerPad = useCallback(async (index, velocity) => {
     try {
       await ready();
+      const pad = padsRef.current[index];
+      if (pad.chop) await ensureChopSource(pad.chop.sourceId);
       const hitVelocity = clamp(velocity ?? padVelocityRef.current, 0.05, 1);
-      await audio.trigger(index, padsRef.current[index], hitVelocity);
+      await audio.trigger(index, pad, hitVelocity);
       setSelected(index);
       if (armedRef.current && audio.playing) {
         const cell = audio.getCaptureCell(quantizeRef.current);
@@ -231,7 +276,7 @@ export default function App() {
       setLit(old => [...old.filter(v => v !== index), index]);
       setTimeout(() => setLit(old => old.filter(v => v !== index)), 125);
     } catch (error) { setStatus(error.message || 'PAD ERROR'); }
-  }, [ready]);
+  }, [ready, ensureChopSource]);
 
   useEffect(() => {
     const handler = event => {
@@ -247,6 +292,12 @@ export default function App() {
 
   const startTransport = async () => {
     await ready();
+    const missingSources = [];
+    const sourceIds = [...new Set(padsRef.current.map(pad => pad.chop?.sourceId).filter(Boolean))];
+    for (const id of sourceIds) {
+      try { await ensureChopSource(id); }
+      catch { missingSources.push(id); }
+    }
     audio.start(index => ({
       steps: banksRef.current[index],
       velocities: velocityBanksRef.current[index],
@@ -260,7 +311,9 @@ export default function App() {
       getChain: () => songModeRef.current ? chainRef.current : null
     });
     setPlaying(true);
-    setStatus('SEQUENCER RUNNING');
+    setStatus(missingSources.length ?
+      'SEQUENCER RUNNING / ' + missingSources.length + ' CHOP SOURCE(S) MISSING: RELOAD ORIGINAL BREAKS' :
+      'SEQUENCER RUNNING');
   };
 
   const stopTransport = () => {
@@ -349,7 +402,8 @@ export default function App() {
       const seconds = await audio.loadSample(index, file);
       await storeSample(index, file.name, file);
       persistedSamples.current = await getSamples();
-      setPads(old => old.map((pad, i) => i === index ? ({ ...pad, sampleName: file.name }) : pad));
+      setPads(old => old.map((pad, i) => i === index ?
+        ({ ...pad, sampleName: file.name, chop: null, chopName: undefined }) : pad));
       setStatus('SAMPLE LOADED: ' + file.name.slice(0, 28) + ' / ' + seconds.toFixed(1) + ' SEC');
     } catch (error) { setStatus(error.message || 'SAMPLE FAILED'); }
   };
@@ -358,14 +412,83 @@ export default function App() {
       audio.removeSample(selected);
       await removeSample(selected);
       persistedSamples.current = persistedSamples.current.filter(entry => entry.index !== selected);
-      setPads(old => old.map((pad, i) => i === selected ? ({ ...pad, sampleName: undefined }) : pad));
+      setPads(old => old.map((pad, i) => i === selected ?
+        ({ ...pad, sampleName: undefined, chop: null, chopName: undefined }) : pad));
       setStatus('SAMPLE REMOVED: ORIGINAL VOICE RESTORED');
     } catch (error) { setStatus(error.message); }
   };
 
+  const loadBreak = async file => {
+    if (!file) return;
+    if (file.size > 20 * 1024 * 1024) {
+      setStatus('BREAK TOO LARGE / 20 MB MAX. TRIM OR COMPRESS IT FIRST.');
+      return;
+    }
+    if (!file.type.startsWith('audio/') && !/\.(wav|mp3|ogg|flac|aif|aiff|m4a)$/i.test(file.name)) {
+      setStatus('CHOOSE AN AUDIO FILE'); return;
+    }
+    try {
+      await ready();
+      const id = await sourceFingerprint(file);
+      const info = await audio.loadChopSource(id, file);
+      const sameSource = chopDeckRef.current?.id === id;
+      setChopDeck({ id, name: file.name });
+      setWavePeaks(info.peaks);
+      setChopSeconds(info.duration);
+      if (!sameSource) { setChopMarkers(equalMarkers()); setSelectedSlice(0); setFlipChops(false); }
+      setStatus('BREAK DECODED: ' + file.name.slice(0, 40) + ' / ' + info.duration.toFixed(2) + 's');
+      try { await saveChopSource(id, file.name, file); }
+      catch { setStatus('BREAK PLAYS NOW, BUT LOCAL STORAGE FAILED: RELOAD FILE NEXT VISIT'); }
+    } catch (error) { setStatus(error.message || 'BREAK COULD NOT BE DECODED'); }
+  };
+
+  const mapChopsToPads = () => {
+    if (!chopDeck || !audio.chopSources.has(chopDeck.id)) {
+      setStatus('LOAD THE BREAK BEFORE SENDING SLICES TO PADS');
+      return;
+    }
+    const regions = chopAssignments(chopDeck.id, chopMarkers, flipChops);
+    const basename = chopDeck.name.replace(/\.[^.]+$/, '').slice(0, 9).toUpperCase();
+    setPads(old => old.map((pad, i) => ({
+      ...pad, chop: regions[i], chopName: basename + ' ' + String(i + 1).padStart(2, '0'), tune: 0
+    })));
+    setStatus('16 CHOPS ON PADS / LIVE SEQUENCER READY / ORIGINAL PAD SAMPLES PRESERVED');
+  };
+
+  const previewSlice = async () => {
+    if (!chopDeck) { setStatus('LOAD A BREAK TO PREVIEW'); return; }
+    try {
+      await ready();
+      const info = await ensureChopSource(chopDeck.id);
+      if (!wavePeaks.length) {
+        setWavePeaks(info.peaks);
+        setChopSeconds(info.duration);
+      }
+      audio.playChop({
+        sourceId: chopDeck.id,
+        ...sliceFor(chopMarkers, selectedSlice), reverse: reversePreview
+      }, 0.9, 0, undefined, true);
+      setStatus('PREVIEWING SLICE ' + String(selectedSlice + 1).padStart(2, '0') + (reversePreview ? ' IN REVERSE' : ''));
+    } catch (error) { setStatus(error.message || 'SLICE PREVIEW FAILED. RELOAD THE SOURCE FILE.'); }
+  };
+
+  const togglePadReverse = () => {
+    if (!pads[selected].chop) return;
+    setPads(old => old.map((pad, i) => i === selected ?
+      ({ ...pad, chop: { ...pad.chop, reverse: !pad.chop.reverse } }) : pad));
+    setStatus('PAD ' + String(selected + 1).padStart(2, '0') + ' REVERSE TOGGLED');
+  };
+
+  const clearPadChop = () => {
+    setPads(old => old.map((pad, i) => i === selected ?
+      ({ ...pad, chop: null, chopName: undefined }) : pad));
+    setStatus('CHOP REMOVED / PREVIOUS PAD SAMPLE OR SYNTH RESTORED');
+  };
+
   const onExport = () => {
-    const project = { version: 2, name, pads, banks, velocities, bank, bpm, swing, fx, synth, chain, songMode, quantize, padVelocity,
-      notice: 'Custom sample audio is saved in local browser storage, not inside this JSON export.' };
+    const project = { version: 3, name, pads, banks, velocities, bank, bpm, swing, fx, synth, chain, songMode, quantize, padVelocity,
+      chopDeck, chopMarkers, flipChops,
+      notice: 'Audio files are NOT embedded in JSON. Back up your source breaks and pad samples; reimport them on other devices.' };
     download(new Blob([JSON.stringify(project, null, 2)], { type: 'application/json' }),
       'PhiBox-' + name.replace(/[^a-z0-9]+/gi, '-').slice(0, 36) + '.json');
     setStatus('PROJECT EXPORTED / SAMPLES REMAIN LOCAL');
@@ -380,7 +503,23 @@ export default function App() {
       stopTransport();
       const d = factory();
       setName(String(data.name || d.name).slice(0, 44));
-      setPads(d.pads.map((p, i) => ({ ...p, tune: clamp(data.pads[i]?.tune, -12, 12) })));
+      setPads(d.pads.map((p, i) => ({
+        ...p, tune: clamp(data.pads[i]?.tune, -12, 12),
+        chop: normalizeChop(data.pads[i]?.chop),
+        chopName: typeof data.pads[i]?.chopName === 'string' ? data.pads[i].chopName.slice(0, 60) : undefined
+      })));
+      const nextDeck = typeof data.chopDeck?.id === 'string' && /^[a-f0-9]{64}$/.test(data.chopDeck.id)
+        ? { id: data.chopDeck.id, name: String(data.chopDeck.name || 'BREAK').slice(0, 100) } : null;
+      setChopDeck(nextDeck);
+      setChopMarkers(normalizeMarkers(data.chopMarkers));
+      setFlipChops(data.flipChops === true);
+      setSelectedSlice(0);
+      if (nextDeck) {
+        try {
+          const info = await ensureChopSource(nextDeck.id);
+          setWavePeaks(info.peaks); setChopSeconds(info.duration);
+        } catch { setWavePeaks([]); setChopSeconds(0); }
+      } else { setWavePeaks([]); setChopSeconds(0); }
       setBanks(data.banks); setVelocities(normalizeVelocities(data.velocities, data.banks));
       setBank(clamp(data.bank, 0, 3));
       setChain(sanitizeChain(data.chain)); setSongMode(data.songMode === true);
@@ -391,7 +530,7 @@ export default function App() {
       await clearSamples();
       persistedSamples.current = [];
       audio.samples.clear();
-      setStatus('PROJECT IMPORTED / RELOAD CUSTOM SAMPLES');
+      setStatus('PROJECT IMPORTED / ORIGINAL AUDIO NOT EMBEDDED. RELOAD ANY MISSING BREAK OR PAD SAMPLES.');
     } catch (error) { setStatus(error.message || 'IMPORT FAILED'); }
   };
 
@@ -462,7 +601,7 @@ export default function App() {
             <div className="brand-sub">THE INFINITE GROOVE MACHINE</div></div>
         </div>
         <div className="topbar-center"><span className="live-light" /> BROWSER AUDIO WORKSTATION
-          <span className="topbar-divider" /> V 0.1.0 <span className="beta-pill">ALPHA</span>
+          <span className="topbar-divider" /> V 0.3.0 <span className="beta-pill">ALPHA</span>
         </div>
         <a className="github-link" href="https://github.com/MichaelWave369/PhiBox" target="_blank" rel="noreferrer">
           SOURCE CODE <span aria-hidden="true">↗</span>
@@ -506,24 +645,31 @@ export default function App() {
               {pads.map((p, index) => <button key={index} type="button" onPointerDown={() => triggerPad(index)}
                 onDragOver={e => e.preventDefault()} onDrop={e => { e.preventDefault(); importSample(index, e.dataTransfer.files[0]); }}
                 className={'pad pad-' + p.color + (selected === index ? ' selected' : '') + (lit.includes(index) ? ' pad-hit' : '')}
-                aria-label={'Play pad ' + (index + 1) + ': ' + (p.sampleName || p.name)}>
+                aria-label={'Play pad ' + (index + 1) + ': ' + (p.chop ? p.chopName : p.sampleName || p.name)}>
                 <span className="pad-top"><span>{String(index + 1).padStart(2, '0')}</span><span className="pad-led" /></span>
-                <span className="pad-middle">{p.sampleName ? '◈' : p.group === 'drums' ? '✳' : '∿'}</span>
-                <span className="pad-name">{p.sampleName ? p.sampleName.replace(/\.[^.]+$/, '').slice(0, 12) : p.name}</span>
+                <span className="pad-middle">{p.chop ? '≋' : p.sampleName ? '◈' : p.group === 'drums' ? '✳' : '∿'}</span>
+                <span className="pad-name">{p.chop ? p.chopName || 'CHOP ' + (index + 1) :
+                  p.sampleName ? p.sampleName.replace(/\.[^.]+$/, '').slice(0, 12) : p.name}</span>
                 <span className="pad-key">{HOTKEYS[index].toUpperCase()}</span>
               </button>)}
             </div>
             <div className="selected-editor">
               <div><span className="overline">PAD {String(selected + 1).padStart(2, '0')} / EDIT</span>
-                <strong>{pad.sampleName ? pad.sampleName.slice(0, 24) : pad.name}</strong>
-                <small>{pad.sampleName ? 'CUSTOM SAMPLE · LOCAL STORAGE' : pad.group === 'drums' ? 'ANALOG-MODELED DRUM' : 'SYNTHESIZED INSTRUMENT'}</small></div>
+                <strong>{pad.chop ? pad.chopName || 'SLICED BREAK' : pad.sampleName ? pad.sampleName.slice(0, 24) : pad.name}</strong>
+                <small>{pad.chop ? (pad.chop.reverse ? 'REVERSE CHOP' : 'SLICED AUDIO') + ' · NON-DESTRUCTIVE' :
+                  pad.sampleName ? 'CUSTOM SAMPLE · LOCAL STORAGE' : pad.group === 'drums' ? 'ANALOG-MODELED DRUM' : 'SYNTHESIZED INSTRUMENT'}</small></div>
               <label className="tune-control"><span>TUNE</span>
                 <input aria-label="Selected pad tuning in semitones" type="range" min="-12" max="12" value={pad.tune || 0}
                   onChange={e => setPads(old => old.map((p, i) => i === selected ? { ...p, tune: Number(e.target.value) } : p))} />
                 <b>{pad.tune > 0 ? '+' : ''}{pad.tune || 0} ST</b></label>
               <div className="sample-actions">
                 <button className="small-accent-button" onClick={() => { targetRef.current = selected; fileRef.current.click(); }}><Icon name="upload" size={14} /> LOAD SAMPLE</button>
-                {pad.sampleName && <button className="small-ghost-button" onClick={removeSelectedSample}>RESET</button>}
+                {pad.chop && <>
+                  <button className="small-ghost-button" onClick={togglePadReverse}>
+                    {pad.chop.reverse ? 'FORWARD ↗' : 'REVERSE ↶'}</button>
+                  <button className="small-ghost-button" onClick={clearPadChop}>UNDO CHOP</button>
+                </>}
+                {!pad.chop && pad.sampleName && <button className="small-ghost-button" onClick={removeSelectedSample}>RESET</button>}
               </div>
             </div>
             <input ref={fileRef} hidden type="file" accept="audio/*,.wav,.mp3,.flac,.aif,.aiff,.ogg,.m4a"
@@ -614,6 +760,73 @@ export default function App() {
               onClick={() => setChain(old => [...old, old.at(-1) ?? 0])}>+ ADD BAR</button>
               <button type="button" disabled={chain.length <= 1}
                 onClick={() => setChain(old => old.slice(0, -1))}>− REMOVE BAR</button></div>
+          </div>
+        </section>
+
+        <section className="panel chop-shop-panel">
+          <div className="chop-shop-head">
+            <div>
+              <span className="overline">07 / BREAK LABORATORY</span>
+              <h2>Φ Sample Chop Shop <span className="chop-tag">R3 · NON-DESTRUCTIVE</span></h2>
+              <p>Bring a break. Find the pocket. Slice it into sixteen new instruments.</p>
+            </div>
+            <button type="button" className="chop-load-button"
+              onClick={() => chopFileRef.current?.click()}>
+              <Icon name="upload" size={16} /> LOAD A BREAK
+            </button>
+            <input hidden ref={chopFileRef} type="file"
+              accept="audio/*,.wav,.mp3,.flac,.aif,.aiff,.m4a,.ogg"
+              onChange={e => { loadBreak(e.target.files?.[0]); e.target.value = ''; }} />
+          </div>
+          <div className="chop-meta-row">
+            <span className="chop-source-label"><i className={wavePeaks.length ? 'active' : ''} />
+              {chopDeck ? chopDeck.name : 'NO AUDIO SOURCE LOADED'}</span>
+            <span>{chopSeconds ? chopSeconds.toFixed(2) + ' SEC' : '-- SEC'} · 16 CHOPS · 1 SOURCE FILE</span>
+          </div>
+          <div className="chop-drop-zone" onDragOver={e => e.preventDefault()}
+            onDrop={e => { e.preventDefault(); loadBreak(e.dataTransfer.files?.[0]); }}>
+            <ChopWaveform peaks={wavePeaks} markers={chopMarkers}
+              selected={selectedSlice} onSelect={setSelectedSlice}
+              onMove={(index, fraction) => setChopMarkers(old => moveMarker(old, index, fraction))} />
+          </div>
+          <div className="chop-controls">
+            <div className="chop-preview-actions">
+              <button type="button" className="chop-preview" onClick={previewSlice}
+                disabled={!chopDeck}><Icon name="play" size={16} /> PREVIEW {String(selectedSlice + 1).padStart(2, '0')}</button>
+              <button type="button" className="chop-plain-button"
+                onClick={() => audio.stopChopPreview()}>STOP PREVIEW</button>
+              <button type="button" className={'chop-plain-button ' + (reversePreview ? 'selected' : '')}
+                aria-pressed={reversePreview} onClick={() => setReversePreview(v => !v)}>
+                {reversePreview ? '↶ REVERSE PREVIEW ON' : '↶ REVERSE PREVIEW'}
+              </button>
+            </div>
+            <div className="chop-slice-info">
+              <strong>SLICE {String(selectedSlice + 1).padStart(2, '0')}</strong>
+              <span>{chopSeconds ? (chopMarkers[selectedSlice] * chopSeconds).toFixed(2) : '0.00'}s →
+                {chopSeconds ? (chopMarkers[selectedSlice + 1] * chopSeconds).toFixed(2) : '0.00'}s</span>
+            </div>
+          </div>
+          <div className="chop-routing">
+            <div className="chop-routing-copy">
+              <strong>ROUTE TO PAD MATRIX</strong>
+              <span>Move marker lines to reshape slices. Routing replaces the pad sound, not its saved source sample.</span>
+            </div>
+            <div className="chop-route-buttons">
+              <button type="button" className={'chop-plain-button ' + (flipChops ? 'selected' : '')}
+                onClick={() => setFlipChops(v => !v)} aria-pressed={flipChops}>
+                {flipChops ? 'ORDER: 16 → 01' : 'ORDER: 01 → 16'}
+              </button>
+              <button type="button" className="chop-route-main" onClick={mapChopsToPads}
+                disabled={!chopDeck || !wavePeaks.length}>CHOP → 16 PADS <span>↗</span></button>
+            </div>
+          </div>
+          <div className="chop-help">
+            <span>DRAG A LINE TO MOVE A SLICE BOUNDARY · CLICK A REGION OR NUMBER TO PREVIEW</span>
+            <span>AFTER EDITING, ROUTE AGAIN TO UPDATE THE PADS · EACH PAD HAS TUNE + REVERSE</span>
+          </div>
+          <div className="chop-warning">
+            SOURCE AUDIO IS SAVED LOCALLY IN THIS BROWSER, NOT INSIDE PROJECT JSON.
+            KEEP THE ORIGINAL FILE FOR MOVING TO ANOTHER MACHINE.
           </div>
         </section>
 
