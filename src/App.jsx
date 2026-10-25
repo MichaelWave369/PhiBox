@@ -12,6 +12,7 @@ import { LOOP_DEFAULTS, normalizeLoops, encodeWav } from './audio/loop-utils.js'
 import ChopWaveform from './components/ChopWaveform.jsx';
 import PhiFlexRack from './components/PhiFlexRack.jsx';
 import {makeInstrument,sanitizeInstrument} from './audio/instrument-state.js';
+import {readChippyDipPattern,writeChippyDipPattern} from './audio/chippydip-bridge.js';
 
 const KEY = 'phibox-project-v1';
 const DEFAULT_FX = { volume: 0.78, cutoff: 14000, drive: 0.08, delay: 0.16, reverb: 0.12 };
@@ -772,7 +773,7 @@ export default function App() {
   };
 
   const onExport = () => {
-    const project = { version: 8, name, pads, banks, velocities, bank, bpm, swing, fx, synth, instrument, chain, songMode, quantize, padVelocity,
+    const project = { version: 9, name, pads, banks, velocities, bank, bpm, swing, fx, synth, instrument, chain, songMode, quantize, padVelocity,
       chopDeck, chopMarkers, flipChops, sourceBpm, beatBars, gridStart, syncMode,
       loopBars, overdubGain, captureSource,punchStart,punchEnd,
       loopSettings:loops.map(({name,muted,solo,pan,volume,bars,bpm})=>({name,muted,solo,pan,volume,bars,bpm})),
@@ -898,6 +899,30 @@ export default function App() {
     } catch (error) { setStatus(error.message || 'MIDI FAILED'); }
   };
 
+  const importChippyPattern = async file => {
+    try {
+      if(file.size>150000)throw new Error('ChippyDip JSON exceeds the 150 KB safety limit.');
+      const parsed=readChippyDipPattern(JSON.parse(await file.text()));
+      // Imported pattern replaces the instrument, not PhiBox drums, loop audio, FX or favorites.
+      setInstrument({...parsed.rack,favorites:instrumentRef.current.favorites});
+      setBpm(parsed.bpm);
+      setStatus('CHIPPYDIP V'+parsed.sourceVersion+
+        ' PATTERN IMPORTED / ORIGINAL SOUND EDITS LIVE IN ΦFLEX · '+parsed.bpm+' BPM');
+    }catch(error){
+      setStatus('CHIPPYDIP IMPORT REJECTED: '+(error.message||'INVALID PATTERN'));
+    }
+  };
+
+  const exportChippyPattern = () => {
+    try{
+      const file=writeChippyDipPattern(instrumentRef.current,bpm);
+      download(new Blob([JSON.stringify(file,null,2)],{type:'application/json'}),
+        'PhiFlex-to-ChippyDip-'+name.replace(/[^a-z0-9]+/gi,'-').slice(0,24)+'.json');
+      setStatus('CHIPPYDIP V5 PATTERN EXPORTED / AUDIO FILES NOT INCLUDED'+
+        (bpm>200||bpm<60?' / TEMPO LIMITED TO 60–200 BPM':''));
+    }catch(error){setStatus('CHIPPYDIP EXPORT FAILED: '+error.message);}
+  };
+
   const keyDown = async note => {
     try { await ready(); await audio.noteOn(note); setActiveNote(note); }
     catch (error) { setStatus(error.message); }
@@ -913,7 +938,7 @@ export default function App() {
             <div className="brand-sub">THE INFINITE GROOVE MACHINE</div></div>
         </div>
         <div className="topbar-center"><span className="live-light" /> BROWSER AUDIO WORKSTATION
-          <span className="topbar-divider" /> V 0.8.0 <span className="beta-pill">ALPHA</span>
+          <span className="topbar-divider" /> V 0.9.0 <span className="beta-pill">ALPHA</span>
         </div>
         <a className="github-link" href="https://github.com/MichaelWave369/PhiBox" target="_blank" rel="noreferrer">
           SOURCE CODE <span aria-hidden="true">↗</span>
@@ -1385,7 +1410,8 @@ export default function App() {
         </section>
 
         <PhiFlexRack rack={instrument} onChange={setInstrument}
-          playing={playing} playhead={playhead} onAudition={keyDown} onRelease={keyUp}/>
+          playing={playing} playhead={playhead} onAudition={keyDown} onRelease={keyUp}
+          onImportPattern={importChippyPattern} onExportPattern={exportChippyPattern}/>
         <div className="lower-grid">
           <section className="panel synth-panel">
             <PanelHeader kicker="03 / SOUND DESIGN" title="Oscillator Lab" right={<span className="chip">POLYPHONIC SYNTH</span>} />
