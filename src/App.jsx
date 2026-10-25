@@ -1,11 +1,13 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { audio } from './audio/engine.js';
-import { clearSamples, getSamples, removeSample, storeSample } from './audio/storage.js';
+import { clearSamples, getSamples, removeSample, storeSample, saveChopSource, getChopSources } from './audio/storage.js';
 import {
   PAD_PRESETS, HOTKEYS, makePatternBanks, makeEmptyPattern, isPattern,
   midiToHz, noteName, clamp
 } from './audio/patterns.js';
 import { DEFAULT_VELOCITY, velocitiesFromBanks, normalizeVelocities, sanitizeChain } from './audio/performance.js';
+import { equalMarkers, normalizeMarkers, normalizeChop, sliceFor, moveMarker, chopAssignments, sourceFingerprint } from './audio/chops.js';
+import ChopWaveform from './components/ChopWaveform.jsx';
 
 const KEY = 'phibox-project-v1';
 const DEFAULT_FX = { volume: 0.78, cutoff: 14000, drive: 0.08, delay: 0.16, reverb: 0.12 };
@@ -17,7 +19,8 @@ const factory = () => {
     name: 'FIRST CONTACT', pads: freshPads(), banks,
     velocities: velocitiesFromBanks(banks),
     bank: 0, bpm: 108, swing: 12, fx: { ...DEFAULT_FX }, synth: { ...DEFAULT_SYNTH },
-    chain: [0, 1, 0, 2], songMode: false, quantize: '1/16', padVelocity: DEFAULT_VELOCITY
+    chain: [0, 1, 0, 2], songMode: false, quantize: '1/16', padVelocity: DEFAULT_VELOCITY,
+    chopDeck: null, chopMarkers: equalMarkers(), flipChops: false
   };
 };
 function loadProject() {
@@ -32,10 +35,16 @@ function loadProject() {
           ...p,
           tune: clamp(data.pads[i]?.tune, -12, 12),
           sampleName: typeof data.pads[i]?.sampleName === 'string' ? data.pads[i].sampleName.slice(0, 60) : undefined,
+          chop: normalizeChop(data.pads[i]?.chop),
+          chopName: typeof data.pads[i]?.chopName === 'string' ? data.pads[i].chopName.slice(0, 60) : undefined,
         })),
         banks: data.banks, velocities: normalizeVelocities(data.velocities, data.banks),
         bank: clamp(data.bank, 0, 3),
         chain: sanitizeChain(data.chain), songMode: data.songMode === true,
+        chopDeck: typeof data.chopDeck?.id === 'string' && /^[a-f0-9]{64}$/.test(data.chopDeck.id)
+          ? { id: data.chopDeck.id, name: String(data.chopDeck.name || 'BREAK').slice(0, 100) } : null,
+        chopMarkers: normalizeMarkers(data.chopMarkers),
+        flipChops: data.flipChops === true,
         quantize: ['1/16', '1/8', '1/4'].includes(data.quantize) ? data.quantize : '1/16',
         padVelocity: clamp(data.padVelocity ?? DEFAULT_VELOCITY, 0.05, 1),
         bpm: clamp(data.bpm, 40, 240), swing: clamp(data.swing, 0, 70),
@@ -139,6 +148,13 @@ export default function App() {
   const [chain, setChain] = useState(initial.chain);
   const [songMode, setSongMode] = useState(initial.songMode);
   const [activeBar, setActiveBar] = useState(0);
+  const [chopDeck, setChopDeck] = useState(initial.chopDeck);
+  const [chopMarkers, setChopMarkers] = useState(initial.chopMarkers);
+  const [flipChops, setFlipChops] = useState(initial.flipChops);
+  const [selectedSlice, setSelectedSlice] = useState(0);
+  const [reversePreview, setReversePreview] = useState(false);
+  const [wavePeaks, setWavePeaks] = useState([]);
+  const [chopSeconds, setChopSeconds] = useState(0);
   const [bpm, setBpm] = useState(initial.bpm);
   const [swing, setSwing] = useState(initial.swing);
   const [fx, setFx] = useState(initial.fx);
@@ -155,6 +171,9 @@ export default function App() {
   const [status, setStatus] = useState('READY TO MAKE NOISE');
   const [audioReady, setAudioReady] = useState(false);
   const fileRef = useRef(null);
+  const chopFileRef = useRef(null);
+  const loadingRef = useRef(null);
+  const chopDeckRef = useRef(chopDeck);
   const projectRef = useRef(null);
   const targetRef = useRef(0);
   const loadedRef = useRef(false);
@@ -172,6 +191,7 @@ export default function App() {
   velocityBanksRef.current = velocities;
   bankRef.current = bank;
   padsRef.current = pads;
+  chopDeckRef.current = chopDeck;
   chainRef.current = chain;
   songModeRef.current = songMode;
   armedRef.current = armed;
@@ -180,15 +200,13 @@ export default function App() {
 
   useEffect(() => {
     localStorage.setItem(KEY, JSON.stringify({
-      name, pads, banks, velocities, bank, bpm, swing, fx, synth, chain, songMode, quantize, padVelocity
+      name, pads, banks, velocities, bank, bpm, swing, fx, synth, chain, songMode, quantize, padVelocity,
+      chopDeck, chopMarkers, flipChops
     }));
-  }, [name, pads, banks, velocities, bank, bpm, swing, fx, synth, chain, songMode, quantize, padVelocity]);
+  }, [name, pads, banks, velocities, bank, bpm, swing, fx, synth, chain, songMode, quantize, padVelocity, chopDeck, chopMarkers, flipChops]);
 
   useEffect(() => {
-    let alive = true;
-    getSamples().then(rows => { if (alive) persistedSamples.current = rows; })
-      .catch(() => { if (alive) setStatus('STORAGE UNAVAILABLE: SAMPLES LIVE ONLY'); });
-    return () => { alive = false; audio.stop(); audio.stopVocoder(); };
+    return () => { audio.stop(); audio.stopVocoder(); audio.stopChopPreview(); };
   }, []);
 
   useEffect(() => { audio.setFX(fx); }, [fx]);
@@ -198,14 +216,32 @@ export default function App() {
   const ready = useCallback(async () => {
     await audio.ensure();
     setAudioReady(true);
-    if (!loadedRef.current) {
-      loadedRef.current = true;
-      const rows = persistedSamples.current;
-      for (const entry of rows) {
-        try { await audio.loadSample(entry.index, entry.file); }
-        catch { setStatus('ONE SAVED SAMPLE COULD NOT BE RESTORED'); }
-      }
+    if (!loadingRef.current) {
+      loadingRef.current = (async () => {
+        const [samples, sources] = await Promise.all([getSamples(), getChopSources()]);
+        persistedSamples.current = samples;
+        for (const entry of samples) {
+          try { await audio.loadSample(entry.index, entry.file); }
+          catch { setStatus('ONE SAVED SAMPLE COULD NOT BE RESTORED'); }
+        }
+        const needed = new Set([
+          chopDeckRef.current?.id,
+          ...padsRef.current.map(pad => pad.chop?.sourceId)
+        ].filter(Boolean));
+        for (const item of sources) {
+          if (!needed.has(item.id)) continue;
+          try {
+            const info = await audio.loadChopSource(item.id, item.file);
+            if (item.id === chopDeckRef.current?.id) {
+              setWavePeaks(info.peaks);
+              setChopSeconds(info.duration);
+            }
+          } catch { setStatus('A CHOP SOURCE COULD NOT BE RESTORED'); }
+        }
+      })();
     }
+    try { await loadingRef.current; }
+    catch (error) { loadingRef.current = null; setStatus(error.message || 'LOCAL SAMPLE STORAGE UNAVAILABLE'); }
   }, []);
 
   const triggerPad = useCallback(async (index, velocity) => {
