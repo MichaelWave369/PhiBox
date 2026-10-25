@@ -4,6 +4,7 @@ import { audioPeaks, playbackWindow } from './chops.js';
 import { onsetEnvelope, estimatedTempo, smartTransientMarkers, tempoFactor, grainTimeline } from './break-intelligence.js';
 import { barFrames, nextBarTime } from './loop-utils.js';
 import { renderOverdub, toAudioBuffer } from './overdub.js';
+import { renderPunch } from './punch.js';
 
 class PhiAudioEngine {
   constructor() {
@@ -39,6 +40,9 @@ class PhiAudioEngine {
     this.captureJob = null;
     this.captureId = 0;
     this.transportOrigin = 0;
+    this.liveCapture = null;
+    this.micInput = null;
+    this.micRequestId = 0;
   }
 
   async ensure() {
@@ -47,6 +51,8 @@ class PhiAudioEngine {
       if (!Context) throw new Error('This browser does not support Web Audio.');
       const ctx = this.ctx = new Context();
       this.input = ctx.createGain();
+      this.liveCapture = ctx.createGain();
+      this.input.connect(this.liveCapture);
       this.shaper = ctx.createWaveShaper();
       this.shaper.oversample = '2x';
       this.filter = ctx.createBiquadFilter();
@@ -128,10 +134,15 @@ class PhiAudioEngine {
       await this.ctx.audioWorklet.addModule(new URL('./loop-capture-processor.js', import.meta.url).href);
       const ctx=this.ctx;
       const node=new AudioWorkletNode(ctx,'phi-loop-capture',{
-        numberOfInputs:2,numberOfOutputs:1,outputChannelCount:[2]
+        numberOfInputs:3,numberOfOutputs:1,outputChannelCount:[2]
       });
-      this.input.connect(node,0,0);
+      this.liveCapture.connect(node,0,0);
       this.compressor.connect(node,0,1);
+      // External input captures even when monitoring is turned off.
+      // A silent source prevents the worklet from idling before permission is granted.
+      this.micCaptureBus=ctx.createGain();
+      this.micCaptureBus.connect(node,0,2);
+      if(this.micInput) this.micInput.analyser.connect(this.micCaptureBus);
       const silence=ctx.createGain();silence.gain.value=0;
       node.connect(silence).connect(ctx.destination);
       node.port.onmessage = event => this.onCaptureMessage(event.data);
@@ -156,9 +167,15 @@ class PhiAudioEngine {
         const buffer=this.ctx.createBuffer(2,left.length,this.ctx.sampleRate);
         buffer.copyToChannel(left,0); buffer.copyToChannel(right,1);
         let completed=buffer;
-        if(job.source==='live') {
+        if(job.source==='live'||job.source==='input') {
           const previous=this.loopBuffers.get(job.track)||null;
-          if(job.overdub) {
+          if(job.punch) {
+            if(!previous)throw new Error('The loop to punch disappeared during capture.');
+            completed=toAudioBuffer(this.ctx,renderPunch(previous.buffer,buffer,{
+              oldBpm:previous.bpm,newBpm:job.bpm,originTime:job.originTime,
+              startTime:job.startTime,region:job.punch,gain:job.overdubGain
+            }));
+          } else if(job.overdub) {
             if(!previous)throw new Error('The original loop disappeared before overdubbing.');
             const mixed=renderOverdub(previous.buffer,buffer,{
               oldBpm:previous.bpm,newBpm:job.bpm,
@@ -172,19 +189,25 @@ class PhiAudioEngine {
           if(this.playing)this.playLoopTrack(job.track);
         }
         job.onDone?.(completed,{
-          track:job.track,bpm:job.bpm,bars:job.bars,source:job.source,overdub:job.overdub===true
+          track:job.track,bpm:job.bpm,bars:job.bars,source:job.source,overdub:job.overdub===true,punch:!!job.punch
         });
       } catch(error) {job.onError?.(error);}
     }
   }
 
-  async armLoopCapture({ track=null, bars=1, source='live', overdub=false, overdubGain=.85, onState, onDone, onError }) {
+  async armLoopCapture({ track=null, bars=1, source='live', overdub=false, punch=null, overdubGain=.85, onState, onDone, onError }) {
     if (!this.playing || !this.ctx) throw new Error('Start the transport before recording a loop.');
     if(this.captureJob) throw new Error('Another loop capture is already armed or recording.');
-    if(source==='live' && (!Number.isInteger(track)||track<0||track>=4))throw new Error('Choose a loop track 1–4.');
-    if(source!=='live'&&source!=='master')throw new Error('Invalid recording source.');
+    if(source!=='master' && (!Number.isInteger(track)||track<0||track>=4))throw new Error('Choose a loop track 1–4.');
+    if(!['live','master','input'].includes(source))throw new Error('Invalid recording source.');
+    if(source==='input' && !this.micInput)throw new Error('Connect a microphone or audio interface first.');
+    if(punch && (!Number.isFinite(punch.start)||!Number.isFinite(punch.end)||
+      punch.start<0||punch.end>1||punch.end-punch.start<1/64))throw new Error('Invalid punch in/out markers.');
+    if(punch && (source==='master'||!this.loopBuffers.has(track)||overdub))
+      throw new Error('Punch needs a recorded track and cannot be used with overdub.');
+    if(punch)bars=this.loopBuffers.get(track).bars;
     if(overdub) {
-      if(source!=='live'||!this.loopBuffers.has(track))
+      if(source==='master'||!this.loopBuffers.has(track))
         throw new Error('Overdub requires an existing loop on the selected track.');
       if(!Number.isFinite(overdubGain)||overdubGain<0||overdubGain>1.5)
         throw new Error('Invalid overdub gain.');
@@ -197,7 +220,7 @@ class PhiAudioEngine {
     if(!frames)throw new Error('This loop duration is unsupported.');
     const at=nextBarTime(this.ctx.currentTime,this.transportOrigin,bpm,.18);
     const id=++this.captureId;
-    this.captureJob={id,track,bpm,bars,source,overdub,overdubGain,onState,onDone,onError,startTime:at,originTime:this.transportOrigin};
+    this.captureJob={id,track,bpm,bars,source,overdub,punch,overdubGain,onState,onDone,onError,startTime:at,originTime:this.transportOrigin};
     this.captureNode.port.postMessage({
       type:'arm',id,startFrame:Math.round(at*this.ctx.sampleRate),frames,source
     });
@@ -220,19 +243,51 @@ class PhiAudioEngine {
 
   getLoopTrack(index) {
     if(this.loopMix.has(index))return this.loopMix.get(index);
-    const gain=this.ctx.createGain();
-    gain.gain.value=.8;
-    // Loop returns join the master after the live bus, avoiding recursive live overdubs.
+    const gain=this.ctx.createGain(),panner=this.ctx.createStereoPanner(),analyser=this.ctx.createAnalyser();
+    analyser.fftSize=256;
+    analyser.connect(panner);
+    panner.connect(gain);
+    // Recorded loops enter after the dry input capture bus.
     gain.connect(this.master);
-    this.loopMix.set(index,{gain,volume:.8,muted:false});
-    return this.loopMix.get(index);
+    const channel={input:analyser,analyser,panner,gain,volume:.8,muted:false,solo:false,pan:0};
+    this.loopMix.set(index,channel);
+    return channel;
+  }
+
+  applyLoopMixer() {
+    if(!this.ctx)return;
+    const soloActive=[...this.loopMix.values()].some(track=>track.solo);
+    for(const track of this.loopMix.values()){
+      const audible=!track.muted&&(!soloActive||track.solo);
+      track.gain.gain.setTargetAtTime(audible?track.volume:0,this.ctx.currentTime,.012);
+      track.panner.pan.setTargetAtTime(track.pan,this.ctx.currentTime,.012);
+    }
   }
 
   setLoopTrack(index,options={}) {
     const track=this.getLoopTrack(index);
     if(options.volume!==undefined)track.volume=clamp(options.volume,0,1);
     if(options.muted!==undefined)track.muted=options.muted===true;
-    track.gain.gain.setTargetAtTime(track.muted?0:track.volume,this.ctx.currentTime,.012);
+    if(options.solo!==undefined)track.solo=options.solo===true;
+    if(options.pan!==undefined)track.pan=clamp(options.pan,-1,1);
+    this.applyLoopMixer();
+  }
+
+  readInputLevel() {
+    return this.sampleMeter(this.micInput?.analyser);
+  }
+
+  readLoopLevels() {
+    return Array.from({length:4},(_,i)=>this.sampleMeter(this.loopMix.get(i)?.analyser));
+  }
+
+  sampleMeter(analyser) {
+    if(!analyser)return 0;
+    const values=new Float32Array(analyser.fftSize);
+    analyser.getFloatTimeDomainData(values);
+    let peak=0;
+    for(const sample of values)peak=Math.max(peak,Math.abs(sample));
+    return Math.min(1,peak);
   }
 
   playLoopTrack(index) {
@@ -246,7 +301,7 @@ class PhiAudioEngine {
     source.loopStart=0;source.loopEnd=buffer.duration;
     const rate=this.bpm/bpm;
     source.playbackRate.value=rate;
-    source.connect(output.gain);
+    source.connect(output.input);
     // A short late-start offset keeps playback bar-phase coherent after capturing a take.
     const at=Math.max(this.ctx.currentTime+.04,this.transportOrigin);
     const elapsed=Math.max(0,at-this.transportOrigin);
@@ -706,6 +761,69 @@ class PhiAudioEngine {
     this.stepTimeouts = [];
     this.stepTimeline = [];
     this.sequenceIndex = 0;
+  }
+
+  async connectInput(deviceId=null) {
+    if(!navigator.mediaDevices?.getUserMedia) {
+      throw new Error('Input recording needs HTTPS, microphone permission and getUserMedia.');
+    }
+    // Serializes user permission requests so a late grant never overrides a newer source.
+    const request=++this.micRequestId;
+    const audioConstraints={
+      echoCancellation:false,noiseSuppression:false,autoGainControl:false,
+      ...(deviceId ? {deviceId:{ideal:deviceId}} : {})
+    };
+    const stream=await navigator.mediaDevices.getUserMedia({audio:audioConstraints,video:false});
+    if(request!==this.micRequestId){
+      stream.getTracks().forEach(track=>track.stop());
+      throw new Error('Input connection was cancelled.');
+    }
+    try {
+      await this.ensure();
+      this.disconnectInput(false);
+      const node=this.ctx.createMediaStreamSource(stream);
+      const gain=this.ctx.createGain();
+      const analyser=this.ctx.createAnalyser(); analyser.fftSize=256;
+      const monitor=this.ctx.createGain();monitor.gain.value=0;
+      node.connect(gain);
+      gain.connect(analyser);
+      gain.connect(monitor);
+      monitor.connect(this.master);
+      if(this.micCaptureBus)analyser.connect(this.micCaptureBus);
+      this.micInput={stream,node,gain,analyser,monitor,monitoring:false,volume:.85};
+      gain.gain.value=.85;
+      return stream.getAudioTracks()[0]?.label || 'AUDIO INPUT CONNECTED';
+    }catch(error){
+      stream.getTracks().forEach(track=>track.stop());
+      throw error;
+    }
+  }
+
+  setInputSettings({volume,monitoring}={}) {
+    if(!this.micInput)throw new Error('Connect an input first.');
+    const mic=this.micInput;
+    if(volume!==undefined)mic.volume=clamp(volume,0,1.5);
+    if(monitoring!==undefined)mic.monitoring=monitoring===true;
+    mic.gain.gain.setTargetAtTime(mic.volume,this.ctx.currentTime,.015);
+    mic.monitor.gain.setTargetAtTime(mic.monitoring?1:0,this.ctx.currentTime,.015);
+  }
+
+  disconnectInput(invalidate=true) {
+    if(invalidate)this.micRequestId++;
+    const mic=this.micInput;
+    if(!mic)return;
+    mic.stream.getTracks().forEach(track=>track.stop());
+    for(const node of [mic.node,mic.gain,mic.analyser,mic.monitor]){
+      try{node.disconnect();}catch{/* node disconnected */ }
+    }
+    this.micInput=null;
+  }
+
+  async listInputDevices() {
+    if(!navigator.mediaDevices?.enumerateDevices)return [];
+    const all=await navigator.mediaDevices.enumerateDevices();
+    return all.filter(device=>device.kind==='audioinput')
+      .map(device=>({id:device.deviceId,label:device.label||'Audio input'}));
   }
 
   async startVocoder() {
