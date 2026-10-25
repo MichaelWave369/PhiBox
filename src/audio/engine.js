@@ -2,6 +2,7 @@ import { midiToHz, clamp } from './patterns.js';
 import { chooseCaptureStep, DEFAULT_VELOCITY } from './performance.js';
 import { audioPeaks, playbackWindow } from './chops.js';
 import { onsetEnvelope, estimatedTempo, smartTransientMarkers, tempoFactor, grainTimeline } from './break-intelligence.js';
+import { barFrames, nextBarTime } from './loop-utils.js';
 
 class PhiAudioEngine {
   constructor() {
@@ -26,6 +27,15 @@ class PhiAudioEngine {
     this.stepTimeline = [];
     this.sequenceIndex = 0;
     this.arrangement = {};
+    this.loopBuffers = new Map();
+    this.loopSources = new Map();
+    this.loopMix = new Map();
+    this.padMix = new Map();
+    this.captureNode = null;
+    this.captureInit = null;
+    this.captureJob = null;
+    this.captureId = 0;
+    this.transportOrigin = 0;
   }
 
   async ensure() {
@@ -82,6 +92,167 @@ class PhiAudioEngine {
     return this.ctx;
   }
 
+
+  getPadDestination(index, settings = {}) {
+    let channel = this.padMix.get(index);
+    if (!channel) {
+      const ctx = this.ctx;
+      const filter = ctx.createBiquadFilter();
+      filter.type = 'lowpass';
+      const panner = ctx.createStereoPanner();
+      filter.connect(panner);
+      panner.connect(this.input);
+      const delaySend = ctx.createGain(), reverbSend = ctx.createGain();
+      panner.connect(delaySend); panner.connect(reverbSend);
+      delaySend.connect(this.delay); reverbSend.connect(this.convolver);
+      channel = { input: filter, filter, panner, delaySend, reverbSend };
+      this.padMix.set(index, channel);
+    }
+    const t=this.ctx.currentTime;
+    channel.filter.frequency.setTargetAtTime(clamp(settings.cutoff ?? 20000, 200, 20000),t,.012);
+    channel.panner.pan.setTargetAtTime(clamp(settings.pan ?? 0,-1,1),t,.012);
+    channel.delaySend.gain.setTargetAtTime(clamp(settings.delay ?? 0,0,0.75),t,.016);
+    channel.reverbSend.gain.setTargetAtTime(clamp(settings.reverb ?? 0,0,0.75),t,.016);
+    return channel.input;
+  }
+
+  async prepareCapture() {
+    await this.ensure();
+    if (this.captureNode) return this.captureNode;
+    if (this.captureInit) return this.captureInit;
+    if (!this.ctx.audioWorklet) throw new Error('Loop Forge requires AudioWorklet support in this browser.');
+    this.captureInit = (async () => {
+      await this.ctx.audioWorklet.addModule(new URL('./loop-capture-processor.js', import.meta.url).href);
+      const ctx=this.ctx;
+      const node=new AudioWorkletNode(ctx,'phi-loop-capture',{
+        numberOfInputs:2,numberOfOutputs:1,outputChannelCount:[2]
+      });
+      this.input.connect(node,0,0);
+      this.compressor.connect(node,0,1);
+      const silence=ctx.createGain();silence.gain.value=0;
+      node.connect(silence).connect(ctx.destination);
+      node.port.onmessage = event => this.onCaptureMessage(event.data);
+      this.captureNode=node;
+      return node;
+    })();
+    try{return await this.captureInit;}finally{this.captureInit=null;}
+  }
+
+  onCaptureMessage(message) {
+    const job=this.captureJob;
+    if (!job || message.id!==job.id) return;
+    if (message.type==='started') job.onState?.('recording');
+    if(message.type==='error' || message.type==='aborted') {
+      this.captureJob=null;
+      job.onError?.(new Error(message.message || 'Audio capture aborted'));
+    }
+    if (message.type==='complete') {
+      this.captureJob=null;
+      try {
+        const left=new Float32Array(message.left), right=new Float32Array(message.right);
+        const buffer=this.ctx.createBuffer(2,left.length,this.ctx.sampleRate);
+        buffer.copyToChannel(left,0); buffer.copyToChannel(right,1);
+        if(job.source==='live') {
+          this.setLoopBuffer(job.track,buffer,job.bpm,job.bars);
+          if(this.playing)this.playLoopTrack(job.track);
+        }
+        job.onDone?.(buffer,{track:job.track,bpm:job.bpm,bars:job.bars,source:job.source});
+      } catch(error) {job.onError?.(error);}
+    }
+  }
+
+  async armLoopCapture({ track=null, bars=1, source='live', onState, onDone, onError }) {
+    if (!this.playing || !this.ctx) throw new Error('Start the transport before recording a loop.');
+    if(this.captureJob) throw new Error('Another loop capture is already armed or recording.');
+    if(source==='live' && (!Number.isInteger(track)||track<0||track>=4))throw new Error('Choose a loop track 1–4.');
+    if(source!=='live'&&source!=='master')throw new Error('Invalid recording source.');
+    await this.prepareCapture();
+    if(!this.playing)throw new Error('Transport stopped before capture could arm.');
+    const bpm=this.bpm;
+    const frames=barFrames(bpm,bars,this.ctx.sampleRate);
+    if(!frames)throw new Error('This loop duration is unsupported.');
+    const at=nextBarTime(this.ctx.currentTime,this.transportOrigin,bpm,.18);
+    const id=++this.captureId;
+    this.captureJob={id,track,bpm,bars,source,onState,onDone,onError};
+    this.captureNode.port.postMessage({
+      type:'arm',id,startFrame:Math.round(at*this.ctx.sampleRate),frames,source
+    });
+    onState?.('queued',at);
+    return {id,bpm,bars,startTime:at};
+  }
+
+  cancelCapture() {
+    const job=this.captureJob;
+    if(!job)return;
+    this.captureJob=null;
+    this.captureNode?.port.postMessage({type:'abort'});
+    job.onError?.(new Error('Capture cancelled'));
+  }
+
+  setLoopBuffer(index,buffer,bpm,bars) {
+    this.stopLoopTrack(index);
+    this.loopBuffers.set(index,{buffer,bpm,bars});
+  }
+
+  getLoopTrack(index) {
+    if(this.loopMix.has(index))return this.loopMix.get(index);
+    const gain=this.ctx.createGain();
+    gain.gain.value=.8;
+    // Loop returns join the master after the live bus, avoiding recursive live overdubs.
+    gain.connect(this.master);
+    this.loopMix.set(index,{gain,volume:.8,muted:false});
+    return this.loopMix.get(index);
+  }
+
+  setLoopTrack(index,options={}) {
+    const track=this.getLoopTrack(index);
+    if(options.volume!==undefined)track.volume=clamp(options.volume,0,1);
+    if(options.muted!==undefined)track.muted=options.muted===true;
+    track.gain.gain.setTargetAtTime(track.muted?0:track.volume,this.ctx.currentTime,.012);
+  }
+
+  playLoopTrack(index) {
+    if(!this.ctx || !this.playing || !this.loopBuffers.has(index))return;
+    this.stopLoopTrack(index);
+    const {buffer,bpm}=this.loopBuffers.get(index);
+    const output=this.getLoopTrack(index);
+    const source=this.ctx.createBufferSource();
+    source.buffer=buffer;
+    source.loop=true;
+    source.loopStart=0;source.loopEnd=buffer.duration;
+    const rate=this.bpm/bpm;
+    source.playbackRate.value=rate;
+    source.connect(output.gain);
+    // A short late-start offset keeps playback bar-phase coherent after capturing a take.
+    const at=Math.max(this.ctx.currentTime+.04,this.transportOrigin);
+    const elapsed=Math.max(0,at-this.transportOrigin);
+    const offset=(elapsed*rate)%buffer.duration;
+    source.start(at,offset);
+    this.loopSources.set(index,source);
+  }
+
+  stopLoopTrack(index) {
+    const source=this.loopSources.get(index);
+    if(source) {
+      try{source.stop();}catch { /* already stopped */ }
+      source.disconnect();
+    }
+    this.loopSources.delete(index);
+  }
+
+  removeLoopTrack(index) {
+    this.stopLoopTrack(index);
+    this.loopBuffers.delete(index);
+  }
+
+  retimeLoops() {
+    if(!this.ctx)return;
+    for(const [index,source] of this.loopSources) {
+      const loop=this.loopBuffers.get(index);
+      if(loop)source.playbackRate.setTargetAtTime(this.bpm/loop.bpm,this.ctx.currentTime,.035);
+    }
+  }
+
   makeNoise(seconds) {
     const buffer = this.ctx.createBuffer(1, Math.floor(this.ctx.sampleRate * seconds), this.ctx.sampleRate);
     const samples = buffer.getChannelData(0);
@@ -123,13 +294,13 @@ class PhiAudioEngine {
     this.synth = { ...this.synth, ...next };
   }
 
-  outputGain(time, amplitude, attack = 0.002, decay = 0.24) {
+  outputGain(time, amplitude, attack = 0.002, decay = 0.24, destination = this.input) {
     const g = this.ctx.createGain();
     const a = Math.max(0.001, attack);
     g.gain.setValueAtTime(0.0001, time);
     g.gain.exponentialRampToValueAtTime(Math.max(0.0002, amplitude), time + a);
     g.gain.exponentialRampToValueAtTime(0.0001, time + a + Math.max(0.015, decay));
-    g.connect(this.input);
+    g.connect(destination);
     return g;
   }
 
@@ -144,54 +315,54 @@ class PhiAudioEngine {
     return osc;
   }
 
-  noise(time, length, level, filterType = 'highpass', cutoff = 1600) {
+  noise(time, length, level, filterType = 'highpass', cutoff = 1600, destination = this.input) {
     const src = this.ctx.createBufferSource();
     src.buffer = this.noiseBuffer;
     const filter = this.ctx.createBiquadFilter();
     filter.type = filterType;
     filter.frequency.value = cutoff;
-    const gain = this.outputGain(time, level, 0.001, length);
+    const gain = this.outputGain(time, level, 0.001, length, destination);
     src.connect(filter).connect(gain);
     src.start(time, Math.random() * 0.3);
     src.stop(time + length + 0.02);
   }
 
-  playDrum(kind, velocity, time, tune = 0) {
+  playDrum(kind, velocity, time, tune = 0, destination = this.input) {
     const v = clamp(velocity, 0.05, 1);
     const pitch = Math.pow(2, clamp(tune, -12, 12) / 12);
     if (kind === 'kick') {
-      const gain = this.outputGain(time, v * 0.95, 0.002, 0.48);
+      const gain = this.outputGain(time, v * 0.95, 0.002, 0.48, destination);
       this.oscillator(155 * pitch, 'sine', time, 0.5, gain, 45 * pitch);
       return;
     }
     if (kind === 'snare') {
-      this.noise(time, 0.16, v * 0.44, 'highpass', 1300);
-      this.oscillator(175 * pitch, 'triangle', time, 0.12, this.outputGain(time, v * 0.22, 0.001, 0.1), 100 * pitch);
+      this.noise(time, 0.16, v * 0.44, 'highpass', 1300, destination);
+      this.oscillator(175 * pitch, 'triangle', time, 0.12, this.outputGain(time, v * 0.22, 0.001, 0.1, destination), 100 * pitch);
       return;
     }
     if (kind === 'hat' || kind === 'openhat') {
-      this.noise(time, kind === 'hat' ? 0.075 : 0.43, v * 0.31, 'highpass', 6900);
+      this.noise(time, kind === 'hat' ? 0.075 : 0.43, v * 0.31, 'highpass', 6900, destination);
       return;
     }
     if (kind === 'clap') {
-      [0, 0.025, 0.054].forEach((d, i) => this.noise(time + d, i === 2 ? 0.19 : 0.025, v * 0.31, 'bandpass', 1600));
+      [0, 0.025, 0.054].forEach((d, i) => this.noise(time + d, i === 2 ? 0.19 : 0.025, v * 0.31, 'bandpass', 1600, destination));
       return;
     }
     if (kind === 'tom') {
-      this.oscillator(175 * pitch, 'sine', time, 0.36, this.outputGain(time, v * 0.55, 0.002, 0.34), 76 * pitch);
+      this.oscillator(175 * pitch, 'sine', time, 0.36, this.outputGain(time, v * 0.55, 0.002, 0.34, destination), 76 * pitch);
       return;
     }
     if (kind === 'rim') {
-      this.oscillator(680 * pitch, 'square', time, 0.05, this.outputGain(time, v * 0.12, 0.001, 0.035));
-      this.noise(time, 0.038, v * 0.19, 'highpass', 3600);
+      this.oscillator(680 * pitch, 'square', time, 0.05, this.outputGain(time, v * 0.12, 0.001, 0.035, destination));
+      this.noise(time, 0.038, v * 0.19, 'highpass', 3600, destination);
       return;
     }
     if (kind === 'perc') {
-      this.oscillator(430 * pitch, 'triangle', time, 0.2, this.outputGain(time, v * 0.38, 0.002, 0.18), 210 * pitch);
+      this.oscillator(430 * pitch, 'triangle', time, 0.2, this.outputGain(time, v * 0.38, 0.002, 0.18, destination), 210 * pitch);
     }
   }
 
-  playSynth(frequency, velocity, time, kind = 'lead', override = {}) {
+  playSynth(frequency, velocity, time, kind = 'lead', override = {}, destination = this.input) {
     const ctx = this.ctx;
     const preset = { ...this.synth, ...override };
     const settings = {
@@ -202,7 +373,7 @@ class PhiAudioEngine {
     };
     const [baseWave, level, length] = settings[kind] || settings.lead;
     const wave = override.waveform || (kind === 'lead' ? preset.waveform : baseWave);
-    const env = this.outputGain(time, level * clamp(velocity, 0.04, 1), kind === 'drone' ? 0.12 : 0.006, length);
+    const env = this.outputGain(time, level * clamp(velocity, 0.04, 1), kind === 'drone' ? 0.12 : 0.006, length, destination);
     const voiceFilter = ctx.createBiquadFilter();
     voiceFilter.type = 'lowpass';
     voiceFilter.frequency.setValueAtTime(kind === 'acid' ? 3200 : 11000, time);
@@ -260,7 +431,7 @@ class PhiAudioEngine {
     return reversed;
   }
 
-  playChop(chop, velocity = 0.86, tune = 0, when, preview = false) {
+  playChop(chop, velocity = 0.86, tune = 0, when, preview = false, destination = this.input) {
     const forward = this.chopSources.get(chop?.sourceId);
     if (!forward) throw new Error('Chop source unavailable. Reload the break in Chop Shop.');
     const window = playbackWindow(chop, forward.duration, tune);
@@ -293,7 +464,7 @@ class PhiAudioEngine {
         gain.gain.linearRampToValueAtTime(loudness, at + fade);
         gain.gain.setValueAtTime(loudness, at + Math.max(fade, outputSeconds - fade));
         gain.gain.linearRampToValueAtTime(0.0001, at + outputSeconds);
-        src.connect(gain).connect(this.input);
+        src.connect(gain).connect(destination);
         src.start(at, start + entry.sourceOffset, bufferSeconds);
         src.stop(at + outputSeconds + .015);
         nodes.push(src);
@@ -313,7 +484,7 @@ class PhiAudioEngine {
     gain.gain.linearRampToValueAtTime(clamp(velocity, 0.05, 1) * 0.8, time + fade);
     gain.gain.setValueAtTime(clamp(velocity, 0.05, 1) * 0.8, time + Math.max(fade, audibleSeconds - fade));
     gain.gain.linearRampToValueAtTime(0.0001, time + audibleSeconds);
-    source.connect(gain).connect(this.input);
+    source.connect(gain).connect(destination);
     source.start(time, start, duration);
     source.stop(time + audibleSeconds + 0.025);
     if (preview) {
@@ -349,8 +520,9 @@ class PhiAudioEngine {
   async trigger(index, pad, velocity = 0.85, when) {
     await this.ensure();
     const time = Math.max(this.ctx.currentTime, when ?? this.ctx.currentTime);
+    const destination=this.getPadDestination(index,pad.padFx);
     if (pad.chop) {
-      this.playChop(pad.chop, velocity, Number(pad.tune) || 0, time);
+      this.playChop(pad.chop, velocity, Number(pad.tune) || 0, time, false, destination);
       return;
     }
     const sample = this.samples.get(index);
@@ -360,12 +532,12 @@ class PhiAudioEngine {
       const output = this.ctx.createGain();
       output.gain.value = clamp(velocity, 0.05, 1) * 0.8;
       src.playbackRate.value = Math.pow(2, (Number(pad.tune) || 0) / 12);
-      src.connect(output).connect(this.input);
+      src.connect(output).connect(destination);
       src.start(time);
     } else if (pad.group === 'drums') {
-      this.playDrum(pad.kind, velocity, time, pad.tune || 0);
+      this.playDrum(pad.kind, velocity, time, pad.tune || 0, destination);
     } else {
-      this.playSynth(midiToHz(pad.note + (Number(pad.tune) || 0)), velocity, time, pad.kind);
+      this.playSynth(midiToHz(pad.note + (Number(pad.tune) || 0)), velocity, time, pad.kind, {}, destination);
     }
   }
 
@@ -412,6 +584,8 @@ class PhiAudioEngine {
     this.sequenceIndex = 0;
     this.stepTimeline = [];
     this.nextNoteTime = this.ctx.currentTime + 0.06;
+    this.transportOrigin=this.nextNoteTime;
+    for(const index of this.loopBuffers.keys())this.playLoopTrack(index);
     const tick = () => {
       while (this.playing && this.nextNoteTime < this.ctx.currentTime + 0.13) {
         const index = this.sequenceIndex;
@@ -474,9 +648,12 @@ class PhiAudioEngine {
   setTransport(bpm, swing) {
     this.bpm = clamp(bpm, 40, 240);
     this.swing = clamp(swing, 0, 70);
+    this.retimeLoops();
   }
 
   stop() {
+    this.cancelCapture();
+    for(const index of [...this.loopSources.keys()])this.stopLoopTrack(index);
     this.playing = false;
     if (this.timer) clearInterval(this.timer);
     this.timer = null;

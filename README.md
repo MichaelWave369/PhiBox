@@ -43,6 +43,14 @@ Load your own break and view its waveform in the **Sample Chop Shop**. Edit sixt
 
 Read the [R4 Break Intelligence guide](docs/BREAK_INTELLIGENCE.md) for instructions, assumptions, and experimental audio quality limits. R4 retains the original chopped-pad engine and migrates v1–v3 projects with sync OFF by default.
 
+## R5 / Φ Loop Forge
+
+Build layered performances with **four browser-local loop tracks**, audio-clock-aligned 1/2/4-bar PCM capture, track mute/volume controls, and **RESAMPLE → CHOP SHOP** to send the processed master mix back into the sampler. Pads now have independent filter, stereo pan, delay send, and reverb send controls.
+
+Loop tracks capture the live source while master resampling includes the running loops and effects. R5 loop playback uses tape-style pitch changes when tempo changes. **Loop audio is not included in JSON exports.**
+
+Read the [Loop Forge guide](docs/LOOP_FORGE.md) for recording steps, limitations and device-local storage.
+
 ## Storage and privacy
 
 PhiBox stores pattern banks, FX and synth parameters in **localStorage**, and any imported sample audio blobs in **IndexedDB**. Samples are processed locally. No account, server or telemetry is required to play.

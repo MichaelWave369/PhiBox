@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { audio } from './audio/engine.js';
-import { clearSamples, getSamples, removeSample, storeSample, saveChopSource, getChopSources } from './audio/storage.js';
+import { clearSamples, getSamples, removeSample, storeSample, saveChopSource, getChopSources, saveLoopTake, getLoopTakes, deleteLoopTake } from './audio/storage.js';
 import {
   PAD_PRESETS, HOTKEYS, makePatternBanks, makeEmptyPattern, isPattern,
   midiToHz, noteName, clamp
@@ -8,12 +8,22 @@ import {
 import { DEFAULT_VELOCITY, velocitiesFromBanks, normalizeVelocities, sanitizeChain } from './audio/performance.js';
 import { equalMarkers, normalizeMarkers, normalizeChop, sliceFor, moveMarker, chopAssignments, sourceFingerprint } from './audio/chops.js';
 import { beatGridMarkers, safeTempo } from './audio/break-intelligence.js';
+import { LOOP_DEFAULTS, normalizeLoops, encodeWav } from './audio/loop-utils.js';
 import ChopWaveform from './components/ChopWaveform.jsx';
 
 const KEY = 'phibox-project-v1';
 const DEFAULT_FX = { volume: 0.78, cutoff: 14000, drive: 0.08, delay: 0.16, reverb: 0.12 };
 const DEFAULT_SYNTH = { waveform: 'sawtooth', attack: 0.015, decay: 0.25, sustain: 0.46, release: 0.3 };
-const freshPads = () => PAD_PRESETS.map(p => ({ ...p, tune: 0 }));
+const DEFAULT_PAD_FX = { cutoff: 20000, pan: 0, delay: 0, reverb: 0 };
+function safePadFx(raw) {
+  return {
+    cutoff: clamp(raw?.cutoff ?? 20000, 200, 20000),
+    pan: Math.max(-1,Math.min(1,Number(raw?.pan) || 0)),
+    delay: clamp(raw?.delay,0,.75),
+    reverb: clamp(raw?.reverb,0,.75)
+  };
+}
+const freshPads = () => PAD_PRESETS.map(p => ({ ...p, tune: 0, padFx:{...DEFAULT_PAD_FX} }));
 const factory = () => {
   const banks = makePatternBanks();
   return {
@@ -22,7 +32,7 @@ const factory = () => {
     bank: 0, bpm: 108, swing: 12, fx: { ...DEFAULT_FX }, synth: { ...DEFAULT_SYNTH },
     chain: [0, 1, 0, 2], songMode: false, quantize: '1/16', padVelocity: DEFAULT_VELOCITY,
     chopDeck: null, chopMarkers: equalMarkers(), flipChops: false,
-    sourceBpm: 120, beatBars: 4, gridStart: 0, syncMode: 'off'
+    sourceBpm: 120, beatBars: 4, gridStart: 0, syncMode: 'off', loops: LOOP_DEFAULTS(), loopBars: 1
   };
 };
 function loadProject() {
@@ -39,6 +49,7 @@ function loadProject() {
           sampleName: typeof data.pads[i]?.sampleName === 'string' ? data.pads[i].sampleName.slice(0, 60) : undefined,
           chop: normalizeChop(data.pads[i]?.chop),
           chopName: typeof data.pads[i]?.chopName === 'string' ? data.pads[i].chopName.slice(0, 60) : undefined,
+          padFx: safePadFx(data.pads[i]?.padFx),
         })),
         banks: data.banks, velocities: normalizeVelocities(data.velocities, data.banks),
         bank: clamp(data.bank, 0, 3),
@@ -51,6 +62,7 @@ function loadProject() {
         beatBars: [1,2,4].includes(data.beatBars) ? data.beatBars : 4,
         gridStart: Math.max(0, Math.min(180, Number(data.gridStart) || 0)),
         syncMode: ['off','tape','grain'].includes(data.syncMode) ? data.syncMode : 'off',
+        loops: normalizeLoops(data.loops), loopBars: [1,2,4].includes(data.loopBars) ? data.loopBars : 1,
         quantize: ['1/16', '1/8', '1/4'].includes(data.quantize) ? data.quantize : '1/16',
         padVelocity: clamp(data.padVelocity ?? DEFAULT_VELOCITY, 0.05, 1),
         bpm: clamp(data.bpm, 40, 240), swing: clamp(data.swing, 0, 70),
@@ -166,6 +178,9 @@ export default function App() {
   const [gridStart, setGridStart] = useState(initial.gridStart);
   const [syncMode, setSyncMode] = useState(initial.syncMode);
   const [bpmEstimate, setBpmEstimate] = useState(null);
+  const [loops, setLoops] = useState(initial.loops);
+  const [loopBars, setLoopBars] = useState(initial.loopBars);
+  const [captureState, setCaptureState] = useState(null);
   const [bpm, setBpm] = useState(initial.bpm);
   const [swing, setSwing] = useState(initial.swing);
   const [fx, setFx] = useState(initial.fx);
@@ -185,6 +200,7 @@ export default function App() {
   const chopFileRef = useRef(null);
   const loadingRef = useRef(null);
   const chopDeckRef = useRef(chopDeck);
+  const loopsRef = useRef(loops);
   const projectRef = useRef(null);
   const targetRef = useRef(0);
   const loadedRef = useRef(false);
@@ -203,6 +219,7 @@ export default function App() {
   bankRef.current = bank;
   padsRef.current = pads;
   chopDeckRef.current = chopDeck;
+  loopsRef.current = loops;
   chainRef.current = chain;
   songModeRef.current = songMode;
   armedRef.current = armed;
@@ -212,10 +229,10 @@ export default function App() {
   useEffect(() => {
     localStorage.setItem(KEY, JSON.stringify({
       name, pads, banks, velocities, bank, bpm, swing, fx, synth, chain, songMode, quantize, padVelocity,
-      chopDeck, chopMarkers, flipChops, sourceBpm, beatBars, gridStart, syncMode
+      chopDeck, chopMarkers, flipChops, sourceBpm, beatBars, gridStart, syncMode, loops, loopBars
     }));
   }, [name, pads, banks, velocities, bank, bpm, swing, fx, synth, chain, songMode, quantize,
-    padVelocity, chopDeck, chopMarkers, flipChops, sourceBpm, beatBars, gridStart, syncMode]);
+    padVelocity, chopDeck, chopMarkers, flipChops, sourceBpm, beatBars, gridStart, syncMode, loops, loopBars]);
 
   useEffect(() => {
     return () => { audio.stop(); audio.stopVocoder(); audio.stopChopPreview(); };
@@ -231,8 +248,25 @@ export default function App() {
     setAudioReady(true);
     if (!loadingRef.current) {
       loadingRef.current = (async () => {
-        const [samples, sources] = await Promise.all([getSamples(), getChopSources()]);
+        const [samples, sources, takes] = await Promise.all([getSamples(), getChopSources(), getLoopTakes()]);
         persistedSamples.current = samples;
+        const recovered = new Set();
+        for(const take of takes) {
+          try {
+            if (!Number.isInteger(take.id)||take.id<0||take.id>3||!take.left?.length||
+              take.left.length!==take.right?.length)continue;
+            const buffer=audio.ctx.createBuffer(2,take.left.length,take.sampleRate);
+            buffer.copyToChannel(take.left,0);buffer.copyToChannel(take.right,1);
+            audio.setLoopBuffer(take.id,buffer,take.bpm,take.bars);
+            const settings=loopsRef.current[take.id];
+            audio.setLoopTrack(take.id,settings);
+            recovered.add(take.id);
+          } catch {setStatus('ONE SAVED LOOP COULD NOT BE RESTORED');}
+        }
+        setLoops(old=>old.map((track,i)=>({
+          ...track,hasAudio:recovered.has(i),
+          ...(recovered.has(i) ? { bars:audio.loopBuffers.get(i).bars,bpm:audio.loopBuffers.get(i).bpm } : {})
+        })));
         for (const entry of samples) {
           try { await audio.loadSample(entry.index, entry.file); }
           catch { setStatus('ONE SAVED SAMPLE COULD NOT BE RESTORED'); }
@@ -331,6 +365,7 @@ export default function App() {
 
   const stopTransport = () => {
     audio.stop();
+    setCaptureState(null);
     setPlaying(false);
     setArmed(false);
     armedRef.current = false;
@@ -534,9 +569,96 @@ export default function App() {
     setStatus('CHOP REMOVED / PREVIOUS PAD SAMPLE OR SYNTH RESTORED');
   };
 
+
+  const changeLoopSettings = (index, update) => {
+    setLoops(old=>old.map((track,i)=>i===index?{...track,...update}:track));
+    if (audio.ctx) audio.setLoopTrack(index,{...loopsRef.current[index],...update});
+  };
+
+  const captureLoop = async index => {
+    try {
+      if (audio.captureJob) { setStatus('FINISH OR CANCEL THE CURRENT RECORDING FIRST'); return; }
+      if (!audio.playing) await startTransport();
+      const requestedBars=loopBars;
+      setCaptureState({source:'live',track:index,stage:'preparing'});
+      await audio.armLoopCapture({
+        source:'live',track:index,bars:requestedBars,
+        onState:stage=>setCaptureState({source:'live',track:index,stage}),
+        onDone:async(buffer,info)=>{
+          setCaptureState(null);
+          // Respect mixer settings chosen before the first take was recorded.
+          audio.setLoopTrack(index,loopsRef.current[index]);
+          setLoops(old=>old.map((track,i)=>i===index?{
+            ...track,hasAudio:true,bpm:info.bpm,bars:info.bars
+          }:track));
+          setStatus('LOOP '+(index+1)+' CAPTURED / '+info.bars+' BAR(S) / PLAYING');
+          try {
+            await saveLoopTake(index,info.bpm,info.bars,buffer.sampleRate,
+              buffer.getChannelData(0).slice(),buffer.getChannelData(1).slice());
+          } catch(error) {
+            setStatus('LOOP IS PLAYING IN MEMORY, BUT COULD NOT BE SAVED: '+error.message);
+          }
+        },
+        onError:error=>{setCaptureState(null);setStatus(error.message||'LOOP CAPTURE FAILED');}
+      });
+    } catch(error) {setCaptureState(null);setStatus(error.message||'COULD NOT ARM LOOP');}
+  };
+
+  const captureMaster = async () => {
+    try {
+      if (audio.captureJob) { setStatus('FINISH OR CANCEL THE CURRENT RECORDING FIRST'); return; }
+      if (!audio.playing) await startTransport();
+      const requestedBars=loopBars;
+      setCaptureState({source:'master',track:null,stage:'preparing'});
+      await audio.armLoopCapture({
+        source:'master',bars:requestedBars,
+        onState:stage=>setCaptureState({source:'master',track:null,stage}),
+        onDone:async(buffer,info)=>{
+          setCaptureState({source:'master',track:null,stage:'processing'});
+          try {
+            const wav=encodeWav(buffer);
+            const filename='PhiBox-Resample-'+info.bars+'bar-'+info.bpm+'bpm.wav';
+            const file=new File([wav],filename,{type:'audio/wav'});
+            const id=await sourceFingerprint(file);
+            const sourceInfo=await audio.loadChopSource(id,file);
+            setChopDeck({id,name:filename});
+            setWavePeaks(sourceInfo.peaks);
+            setChopSeconds(sourceInfo.duration);
+            setChopMarkers(equalMarkers());
+            setSourceBpm(info.bpm);
+            setGridStart(0);
+            setSelectedSlice(0);
+            setBpmEstimate(null);
+            setStatus('MASTER RESAMPLED INTO CHOP SHOP / '+info.bars+' BAR(S) / ROUTE TO PADS WHEN READY');
+            try { await saveChopSource(id,filename,file); }
+            catch {setStatus('RESAMPLE READY IN MEMORY, BUT NOT SAVED. EXPORT A BACKUP BEFORE CLOSING.');}
+          } catch(error) {setStatus(error.message||'MASTER RESAMPLING FAILED');}
+          finally {setCaptureState(null);}
+        },
+        onError:error=>{setCaptureState(null);setStatus(error.message||'RESAMPLE CANCELLED');}
+      });
+    } catch(error){setCaptureState(null);setStatus(error.message||'COULD NOT ARM RESAMPLE');}
+  };
+
+  const clearLoopTrack = async index => {
+    if(audio.captureJob) {setStatus('CANCEL THE ACTIVE CAPTURE BEFORE CLEARING A TRACK');return;}
+    audio.removeLoopTrack(index);
+    setLoops(old=>old.map((track,i)=>i===index?{...track,hasAudio:false}:track));
+    try {await deleteLoopTake(index);setStatus('LOOP '+(index+1)+' CLEARED');}
+    catch(error){setStatus('LOOP CLEARED FROM MEMORY, BUT LOCAL STORAGE FAILED: '+error.message);}
+  };
+
+  const updatePadFX = (key,value) => {
+    const index=selected;
+    const next=safePadFx({...pads[index].padFx,[key]:value});
+    setPads(old=>old.map((pad,i)=>i===index?{...pad,padFx:next}:pad));
+    if(audio.ctx)audio.getPadDestination(index,next);
+  };
+
   const onExport = () => {
-    const project = { version: 4, name, pads, banks, velocities, bank, bpm, swing, fx, synth, chain, songMode, quantize, padVelocity,
+    const project = { version: 5, name, pads, banks, velocities, bank, bpm, swing, fx, synth, chain, songMode, quantize, padVelocity,
       chopDeck, chopMarkers, flipChops, sourceBpm, beatBars, gridStart, syncMode,
+      loopBars, loopSettings:loops.map(({name,muted,volume,bars,bpm})=>({name,muted,volume,bars,bpm})),
       notice: 'Audio files are NOT embedded in JSON. Back up your source breaks and pad samples; reimport them on other devices.' };
     download(new Blob([JSON.stringify(project, null, 2)], { type: 'application/json' }),
       'PhiBox-' + name.replace(/[^a-z0-9]+/gi, '-').slice(0, 36) + '.json');
@@ -555,7 +677,8 @@ export default function App() {
       setPads(d.pads.map((p, i) => ({
         ...p, tune: clamp(data.pads[i]?.tune, -12, 12),
         chop: normalizeChop(data.pads[i]?.chop),
-        chopName: typeof data.pads[i]?.chopName === 'string' ? data.pads[i].chopName.slice(0, 60) : undefined
+        chopName: typeof data.pads[i]?.chopName === 'string' ? data.pads[i].chopName.slice(0, 60) : undefined,
+        padFx: safePadFx(data.pads[i]?.padFx)
       })));
       const nextDeck = typeof data.chopDeck?.id === 'string' && /^[a-f0-9]{64}$/.test(data.chopDeck.id)
         ? { id: data.chopDeck.id, name: String(data.chopDeck.name || 'BREAK').slice(0, 100) } : null;
@@ -655,7 +778,7 @@ export default function App() {
             <div className="brand-sub">THE INFINITE GROOVE MACHINE</div></div>
         </div>
         <div className="topbar-center"><span className="live-light" /> BROWSER AUDIO WORKSTATION
-          <span className="topbar-divider" /> V 0.4.0 <span className="beta-pill">ALPHA</span>
+          <span className="topbar-divider" /> V 0.5.0 <span className="beta-pill">ALPHA</span>
         </div>
         <a className="github-link" href="https://github.com/MichaelWave369/PhiBox" target="_blank" rel="noreferrer">
           SOURCE CODE <span aria-hidden="true">↗</span>
@@ -685,7 +808,7 @@ export default function App() {
               <Icon name="record" /></button>
           </div>
           <label className="tempo-block"><span className="overline">TEMPO / BPM</span>
-            <div className="tempo-number"><input type="number" min="40" max="240" value={bpm} onChange={e => setBpm(clamp(e.target.value, 40, 240))} /><span>BPM</span></div></label>
+            <div className="tempo-number"><input type="number" min="40" max="240" value={bpm} disabled={!!captureState} title={captureState ? "Tempo locked during capture" : "Transport tempo"} onChange={e => setBpm(clamp(e.target.value, 40, 240))} /><span>BPM</span></div></label>
           <label className="swing-block"><span className="overline">SWING</span>
             <div className="inline-range"><input aria-label="Swing amount" type="range" min="0" max="70" value={swing} onChange={e => setSwing(Number(e.target.value))} /><strong>{swing}%</strong></div></label>
           <div className="transport-right"><div className="sync-led"><i className={playing ? 'on' : ''} /> {armed ? 'OVERDUB' : playing ? 'PLAYING' : 'READY'}</div>
@@ -724,6 +847,24 @@ export default function App() {
                   <button className="small-ghost-button" onClick={clearPadChop}>UNDO CHOP</button>
                 </>}
                 {!pad.chop && pad.sampleName && <button className="small-ghost-button" onClick={removeSelectedSample}>RESET</button>}
+              </div>
+            </div>
+            <div className="pad-fx-mini">
+              <div className="pad-fx-head"><span className="overline">R5 / PAD FX BUS</span>
+                <strong>VOICE {String(selected + 1).padStart(2, '0')} · FILTER / PAN / SENDS</strong></div>
+              <div className="pad-fx-grid">
+                {[
+                  ['cutoff','FILTER',200,20000,20,v=>(v/1000).toFixed(1)+'K'],
+                  ['pan','PAN',-1,1,.01,v=>v===0?'C':v<0?'L'+Math.round(-v*100):'R'+Math.round(v*100)],
+                  ['delay','DELAY SEND',0,.75,.01,v=>Math.round(v*100)+'%'],
+                  ['reverb','REVERB SEND',0,.75,.01,v=>Math.round(v*100)+'%']
+                ].map(([key,label,min,max,step,show])=>(
+                  <label key={key}><span>{label} <b>{show(pad.padFx?.[key] ?? DEFAULT_PAD_FX[key])}</b></span>
+                    <input type="range" min={min} max={max} step={step}
+                      aria-label={'Pad '+(selected+1)+' '+label} value={pad.padFx?.[key] ?? DEFAULT_PAD_FX[key]}
+                      onChange={e=>updatePadFX(key,Number(e.target.value))}/>
+                  </label>
+                ))}
               </div>
             </div>
             <input ref={fileRef} hidden type="file" accept="audio/*,.wav,.mp3,.flac,.aif,.aiff,.ogg,.m4a"
@@ -814,6 +955,70 @@ export default function App() {
               onClick={() => setChain(old => [...old, old.at(-1) ?? 0])}>+ ADD BAR</button>
               <button type="button" disabled={chain.length <= 1}
                 onClick={() => setChain(old => old.slice(0, -1))}>− REMOVE BAR</button></div>
+          </div>
+        </section>
+
+        <section className="panel loop-forge-panel">
+          <div className="forge-header">
+            <div><span className="overline">08 / LIVE PERFORMANCE LAB · R5</span>
+              <h2>Φ Loop Forge <span className="forge-flag">4 TRACK STUDIO</span></h2>
+              <p>Record your live pads into independent tracks, then resample the entire groove back into the Chop Shop.</p>
+            </div>
+            <div className="forge-status"><i className={captureState?'capturing':''}/>
+              {captureState ? (captureState.stage+' / '+(captureState.source==='master'?'MASTER':'TRACK '+(captureState.track+1))).toUpperCase() :
+                playing ? 'TRANSPORT RUNNING' : 'READY TO LOOP'}</div>
+          </div>
+          <div className="forge-transport">
+            <label>LOOP LENGTH
+              <select aria-label="Loop capture length in bars" value={loopBars}
+                disabled={!!captureState} onChange={e=>setLoopBars(Number(e.target.value))}>
+                <option value="1">1 BAR</option><option value="2">2 BARS</option><option value="4">4 BARS</option>
+              </select></label>
+            <span>RECORDING STARTS ON THE NEXT BAR · SOURCE: LIVE INSTRUMENT BUS</span>
+            {captureState && <button type="button" className="forge-cancel" onClick={()=>audio.cancelCapture()}>
+              CANCEL CAPTURE</button>}
+          </div>
+          <div className="forge-tracks">
+            {loops.map((loop,index)=>(
+              <div key={index} className={'forge-track '+(loop.hasAudio?'has-take':'')}>
+                <div className="forge-track-id"><span>{String(index+1).padStart(2,'0')}</span>
+                  <div className={'forge-meter '+(loop.hasAudio&&!loop.muted&&playing?'active':'')}>
+                    <i/><i/><i/><i/><i/><i/></div></div>
+                <div className="forge-track-content">
+                  <strong>{loop.name}</strong>
+                  <small>{loop.hasAudio ? loop.bars+' BAR(S) · '+loop.bpm+' BPM · LOCAL TAKE' :
+                    'EMPTY / RECORD A NEW LAYER'}</small>
+                  <label>LEVEL <input type="range" min="0" max="1" step=".01"
+                      aria-label={'Loop '+(index+1)+' volume'} value={loop.volume}
+                      onChange={e=>changeLoopSettings(index,{volume:Number(e.target.value)})}/>
+                    <span>{Math.round(loop.volume*100)}%</span></label>
+                </div>
+                <div className="forge-track-actions">
+                  <button type="button" className={loop.muted?'is-muted':''}
+                    aria-label={'Mute loop track '+(index+1)} aria-pressed={loop.muted}
+                    onClick={()=>changeLoopSettings(index,{muted:!loop.muted})}>
+                    {loop.muted?'UNMUTE':'MUTE'}</button>
+                  <button type="button" className="forge-track-record"
+                    disabled={!!captureState} onClick={()=>captureLoop(index)}>
+                    <Icon name="record" size={13}/> {loop.hasAudio?'REPLACE':'REC LOOP'}</button>
+                  <button type="button" className="forge-track-clear" disabled={!!captureState||!loop.hasAudio}
+                    onClick={()=>clearLoopTrack(index)}>CLEAR</button>
+                </div>
+              </div>
+            ))}
+          </div>
+          <div className="forge-resample">
+            <div><span className="overline">THE RECURSIVE LABORATORY</span>
+              <strong>Resample the whole performance</strong>
+              <p>Captures the processed stereo master, including loop tracks, for direct loading into our 16-pad Sample Chop Shop.</p>
+            </div>
+            <button type="button" disabled={!!captureState} onClick={captureMaster}>
+              <Icon name="record" size={18}/> RESAMPLE → CHOP SHOP
+            </button>
+          </div>
+          <div className="forge-footer">
+            <span>LOOP TAKES ARE SAVED ONLY ON THIS DEVICE · JSON EXPORT DOES NOT INCLUDE AUDIO</span>
+            <span>MASTER RESAMPLE INCLUDES ACTIVE LOOPS · LIVE TRACK CAPTURE EXCLUDES THEM</span>
           </div>
         </section>
 
