@@ -244,11 +244,20 @@ export default function App() {
     catch (error) { loadingRef.current = null; setStatus(error.message || 'LOCAL SAMPLE STORAGE UNAVAILABLE'); }
   }, []);
 
+  const ensureChopSource = useCallback(async id => {
+    if (audio.chopSources.has(id)) return audio.getChopInfo(id);
+    const stored = (await getChopSources()).find(item => item.id === id);
+    if (!stored) throw new Error('CHOP SOURCE MISSING / RELOAD THE ORIGINAL BREAK');
+    return audio.loadChopSource(id, stored.file);
+  }, []);
+
   const triggerPad = useCallback(async (index, velocity) => {
     try {
       await ready();
+      const pad = padsRef.current[index];
+      if (pad.chop) await ensureChopSource(pad.chop.sourceId);
       const hitVelocity = clamp(velocity ?? padVelocityRef.current, 0.05, 1);
-      await audio.trigger(index, padsRef.current[index], hitVelocity);
+      await audio.trigger(index, pad, hitVelocity);
       setSelected(index);
       if (armedRef.current && audio.playing) {
         const cell = audio.getCaptureCell(quantizeRef.current);
@@ -267,7 +276,7 @@ export default function App() {
       setLit(old => [...old.filter(v => v !== index), index]);
       setTimeout(() => setLit(old => old.filter(v => v !== index)), 125);
     } catch (error) { setStatus(error.message || 'PAD ERROR'); }
-  }, [ready]);
+  }, [ready, ensureChopSource]);
 
   useEffect(() => {
     const handler = event => {
@@ -283,6 +292,12 @@ export default function App() {
 
   const startTransport = async () => {
     await ready();
+    const missingSources = [];
+    const sourceIds = [...new Set(padsRef.current.map(pad => pad.chop?.sourceId).filter(Boolean))];
+    for (const id of sourceIds) {
+      try { await ensureChopSource(id); }
+      catch { missingSources.push(id); }
+    }
     audio.start(index => ({
       steps: banksRef.current[index],
       velocities: velocityBanksRef.current[index],
@@ -296,7 +311,9 @@ export default function App() {
       getChain: () => songModeRef.current ? chainRef.current : null
     });
     setPlaying(true);
-    setStatus('SEQUENCER RUNNING');
+    setStatus(missingSources.length ?
+      'SEQUENCER RUNNING / ' + missingSources.length + ' CHOP SOURCE(S) MISSING: RELOAD ORIGINAL BREAKS' :
+      'SEQUENCER RUNNING');
   };
 
   const stopTransport = () => {
@@ -492,9 +509,11 @@ export default function App() {
       setChopMarkers(normalizeMarkers(data.chopMarkers));
       setFlipChops(data.flipChops === true);
       setSelectedSlice(0);
-      if (nextDeck && audio.chopSources.has(nextDeck.id)) {
-        const info = audio.getChopInfo(nextDeck.id);
-        setWavePeaks(info.peaks); setChopSeconds(info.duration);
+      if (nextDeck) {
+        try {
+          const info = await ensureChopSource(nextDeck.id);
+          setWavePeaks(info.peaks); setChopSeconds(info.duration);
+        } catch { setWavePeaks([]); setChopSeconds(0); }
       } else { setWavePeaks([]); setChopSeconds(0); }
       setBanks(data.banks); setVelocities(normalizeVelocities(data.velocities, data.banks));
       setBank(clamp(data.bank, 0, 3));
