@@ -5,15 +5,21 @@ import {
   PAD_PRESETS, HOTKEYS, makePatternBanks, makeEmptyPattern, isPattern,
   midiToHz, noteName, clamp
 } from './audio/patterns.js';
+import { DEFAULT_VELOCITY, velocitiesFromBanks, normalizeVelocities, sanitizeChain } from './audio/performance.js';
 
 const KEY = 'phibox-project-v1';
 const DEFAULT_FX = { volume: 0.78, cutoff: 14000, drive: 0.08, delay: 0.16, reverb: 0.12 };
 const DEFAULT_SYNTH = { waveform: 'sawtooth', attack: 0.015, decay: 0.25, sustain: 0.46, release: 0.3 };
 const freshPads = () => PAD_PRESETS.map(p => ({ ...p, tune: 0 }));
-const factory = () => ({
-  name: 'FIRST CONTACT', pads: freshPads(), banks: makePatternBanks(),
-  bank: 0, bpm: 108, swing: 12, fx: { ...DEFAULT_FX }, synth: { ...DEFAULT_SYNTH }
-});
+const factory = () => {
+  const banks = makePatternBanks();
+  return {
+    name: 'FIRST CONTACT', pads: freshPads(), banks,
+    velocities: velocitiesFromBanks(banks),
+    bank: 0, bpm: 108, swing: 12, fx: { ...DEFAULT_FX }, synth: { ...DEFAULT_SYNTH },
+    chain: [0, 1, 0, 2], songMode: false, quantize: '1/16', padVelocity: DEFAULT_VELOCITY
+  };
+};
 function loadProject() {
   try {
     const data = JSON.parse(localStorage.getItem(KEY) || 'null');
@@ -27,7 +33,11 @@ function loadProject() {
           tune: clamp(data.pads[i]?.tune, -12, 12),
           sampleName: typeof data.pads[i]?.sampleName === 'string' ? data.pads[i].sampleName.slice(0, 60) : undefined,
         })),
-        banks: data.banks, bank: clamp(data.bank, 0, 3),
+        banks: data.banks, velocities: normalizeVelocities(data.velocities, data.banks),
+        bank: clamp(data.bank, 0, 3),
+        chain: sanitizeChain(data.chain), songMode: data.songMode === true,
+        quantize: ['1/16', '1/8', '1/4'].includes(data.quantize) ? data.quantize : '1/16',
+        padVelocity: clamp(data.padVelocity ?? DEFAULT_VELOCITY, 0.05, 1),
         bpm: clamp(data.bpm, 40, 240), swing: clamp(data.swing, 0, 70),
         fx: { ...d.fx, ...data.fx }, synth: { ...d.synth, ...data.synth },
       };
@@ -120,7 +130,15 @@ export default function App() {
   const [name, setName] = useState(initial.name);
   const [pads, setPads] = useState(initial.pads);
   const [banks, setBanks] = useState(initial.banks);
+  const [velocities, setVelocities] = useState(initial.velocities);
   const [bank, setBank] = useState(initial.bank);
+  const [armed, setArmed] = useState(false);
+  const [quantize, setQuantize] = useState(initial.quantize);
+  const [padVelocity, setPadVelocity] = useState(initial.padVelocity);
+  const [selectedStep, setSelectedStep] = useState(0);
+  const [chain, setChain] = useState(initial.chain);
+  const [songMode, setSongMode] = useState(initial.songMode);
+  const [activeBar, setActiveBar] = useState(0);
   const [bpm, setBpm] = useState(initial.bpm);
   const [swing, setSwing] = useState(initial.swing);
   const [fx, setFx] = useState(initial.fx);
@@ -142,15 +160,29 @@ export default function App() {
   const loadedRef = useRef(false);
   const persistedSamples = useRef([]);
   const banksRef = useRef(banks);
+  const velocityBanksRef = useRef(velocities);
   const bankRef = useRef(bank);
   const padsRef = useRef(pads);
+  const chainRef = useRef(chain);
+  const songModeRef = useRef(songMode);
+  const armedRef = useRef(armed);
+  const quantizeRef = useRef(quantize);
+  const padVelocityRef = useRef(padVelocity);
   banksRef.current = banks;
+  velocityBanksRef.current = velocities;
   bankRef.current = bank;
   padsRef.current = pads;
+  chainRef.current = chain;
+  songModeRef.current = songMode;
+  armedRef.current = armed;
+  quantizeRef.current = quantize;
+  padVelocityRef.current = padVelocity;
 
   useEffect(() => {
-    localStorage.setItem(KEY, JSON.stringify({ name, pads, banks, bank, bpm, swing, fx, synth }));
-  }, [name, pads, banks, bank, bpm, swing, fx, synth]);
+    localStorage.setItem(KEY, JSON.stringify({
+      name, pads, banks, velocities, bank, bpm, swing, fx, synth, chain, songMode, quantize, padVelocity
+    }));
+  }, [name, pads, banks, velocities, bank, bpm, swing, fx, synth, chain, songMode, quantize, padVelocity]);
 
   useEffect(() => {
     let alive = true;
@@ -176,11 +208,26 @@ export default function App() {
     }
   }, []);
 
-  const triggerPad = useCallback(async (index, velocity = 0.86) => {
+  const triggerPad = useCallback(async (index, velocity) => {
     try {
       await ready();
-      await audio.trigger(index, padsRef.current[index], velocity);
+      const hitVelocity = clamp(velocity ?? padVelocityRef.current, 0.05, 1);
+      await audio.trigger(index, padsRef.current[index], hitVelocity);
       setSelected(index);
+      if (armedRef.current && audio.playing) {
+        const cell = audio.getCaptureCell(quantizeRef.current);
+        if (cell) {
+          setBanks(old => old.map((pattern, b) => b !== cell.bank ? pattern :
+            pattern.map((row, p) => p !== index ? row : row.map((on, k) => k === cell.step ? true : on))));
+          setVelocities(old => old.map((pattern, b) => b !== cell.bank ? pattern :
+            pattern.map((row, p) => p !== index ? row : row.map((level, k) => k === cell.step ? hitVelocity : level))));
+          setSelectedStep(cell.step);
+          if (songModeRef.current) setBank(cell.bank);
+          setStatus('OVERDUB: ' + padsRef.current[index].name + ' → BANK ' +
+            'ABCD'[cell.bank] + ' / STEP ' + String(cell.step + 1).padStart(2, '0') +
+            ' / ' + Math.round(hitVelocity * 100) + '%');
+        }
+      }
       setLit(old => [...old.filter(v => v !== index), index]);
       setTimeout(() => setLit(old => old.filter(v => v !== index)), 125);
     } catch (error) { setStatus(error.message || 'PAD ERROR'); }
@@ -198,33 +245,72 @@ export default function App() {
     return () => window.removeEventListener('keydown', handler);
   });
 
-  const toggleTransport = async () => {
-    if (audio.playing) {
-      audio.stop();
-      setPlaying(false);
-      setPlayhead(-1);
-      setStatus('TRANSPORT STOPPED');
-      return;
-    }
-    try {
-      await ready();
-      audio.start(() => ({ steps: banksRef.current[bankRef.current], pads: padsRef.current }),
-        bpm, swing, setPlayhead);
-      setPlaying(true);
-      setStatus('SEQUENCER RUNNING');
-    } catch (error) { setStatus(error.message || 'TRANSPORT ERROR'); }
+  const startTransport = async () => {
+    await ready();
+    audio.start(index => ({
+      steps: banksRef.current[index],
+      velocities: velocityBanksRef.current[index],
+      pads: padsRef.current
+    }), bpm, swing, (step, playingBank, index) => {
+      setPlayhead(step);
+      setActiveBar(Math.floor(index / 16));
+      if (songModeRef.current) setBank(playingBank);
+    }, {
+      getBank: () => bankRef.current,
+      getChain: () => songModeRef.current ? chainRef.current : null
+    });
+    setPlaying(true);
+    setStatus('SEQUENCER RUNNING');
   };
 
   const stopTransport = () => {
     audio.stop();
     setPlaying(false);
+    setArmed(false);
+    armedRef.current = false;
     setPlayhead(-1);
+    setActiveBar(0);
     setStatus('TRANSPORT STOPPED');
   };
 
+  const toggleTransport = async () => {
+    if (audio.playing) { stopTransport(); return; }
+    try { await startTransport(); }
+    catch (error) { setStatus(error.message || 'TRANSPORT ERROR'); }
+  };
+
+  const toggleOverdub = async () => {
+    if (armedRef.current) {
+      armedRef.current = false;
+      setArmed(false);
+      setStatus('PAD RECORDING DISARMED');
+      return;
+    }
+    try {
+      if (!audio.playing) await startTransport();
+      armedRef.current = true;
+      setArmed(true);
+      setStatus('REC PADS ARMED / PLAY YOUR KEYS OR MIDI TO OVERDUB');
+    } catch (error) { setStatus(error.message || 'FAILED TO ARM PAD RECORDING'); }
+  };
+
   const toggleStep = (pad, step) => {
-    setBanks(old => old.map((pattern, i) => i !== bank ? pattern :
-      pattern.map((row, j) => j !== pad ? row : row.map((v, k) => k === step ? !v : v))));
+    const willEnable = !banksRef.current[bank][pad][step];
+    setSelected(pad);
+    setSelectedStep(step);
+    setBanks(old => old.map((pattern, b) => b !== bank ? pattern :
+      pattern.map((row, p) => p !== pad ? row : row.map((on, k) => k === step ? willEnable : on))));
+    setVelocities(old => old.map((pattern, b) => b !== bank ? pattern :
+      pattern.map((row, p) => p !== pad ? row : row.map((level, k) =>
+        k === step ? (willEnable ? (level || DEFAULT_VELOCITY) : 0) : level))));
+  };
+
+  const setStepVelocity = value => {
+    const level = clamp(value, 0.05, 1);
+    setBanks(old => old.map((pattern, b) => b !== bank ? pattern :
+      pattern.map((row, p) => p !== selected ? row : row.map((on, k) => k === selectedStep ? true : on))));
+    setVelocities(old => old.map((pattern, b) => b !== bank ? pattern :
+      pattern.map((row, p) => p !== selected ? row : row.map((v, k) => k === selectedStep ? level : v))));
   };
 
   const updateFx = (key, value) => setFx(old => ({ ...old, [key]: value }));
@@ -237,15 +323,18 @@ export default function App() {
       row.map((_, step) => Math.random() < probabilities[i] *
         (i === 0 && step % 4 === 0 ? 1.85 : i === 1 && step % 8 === 4 ? 3 : 1)));
     setBanks(old => old.map((p, i) => i === bank ? result : p));
+    setVelocities(old => old.map((p, i) => i === bank ? velocitiesFromBanks([result])[0] : p));
     setStatus('NEW PATTERN GENERATED');
   };
   const clearPattern = () => {
     setBanks(old => old.map((p, i) => i === bank ? makeEmptyPattern() : p));
+    setVelocities(old => old.map((p, i) => i === bank ? velocitiesFromBanks([makeEmptyPattern()])[0] : p));
     setStatus('CURRENT BANK CLEARED');
   };
   const copyBank = () => {
     const next = (bank + 1) % 4;
     setBanks(old => old.map((p, i) => i === next ? old[bank].map(row => [...row]) : p));
+    setVelocities(old => old.map((p, i) => i === next ? old[bank].map(row => [...row]) : p));
     setBank(next);
     setStatus('PATTERN COPIED TO BANK ' + 'ABCD'[next]);
   };
@@ -275,7 +364,7 @@ export default function App() {
   };
 
   const onExport = () => {
-    const project = { version: 1, name, pads, banks, bank, bpm, swing, fx, synth,
+    const project = { version: 2, name, pads, banks, velocities, bank, bpm, swing, fx, synth, chain, songMode, quantize, padVelocity,
       notice: 'Custom sample audio is saved in local browser storage, not inside this JSON export.' };
     download(new Blob([JSON.stringify(project, null, 2)], { type: 'application/json' }),
       'PhiBox-' + name.replace(/[^a-z0-9]+/gi, '-').slice(0, 36) + '.json');
@@ -292,7 +381,11 @@ export default function App() {
       const d = factory();
       setName(String(data.name || d.name).slice(0, 44));
       setPads(d.pads.map((p, i) => ({ ...p, tune: clamp(data.pads[i]?.tune, -12, 12) })));
-      setBanks(data.banks); setBank(clamp(data.bank, 0, 3));
+      setBanks(data.banks); setVelocities(normalizeVelocities(data.velocities, data.banks));
+      setBank(clamp(data.bank, 0, 3));
+      setChain(sanitizeChain(data.chain)); setSongMode(data.songMode === true);
+      setQuantize(['1/16', '1/8', '1/4'].includes(data.quantize) ? data.quantize : '1/16');
+      setPadVelocity(clamp(data.padVelocity ?? DEFAULT_VELOCITY, 0.05, 1));
       setBpm(clamp(data.bpm, 40, 240)); setSwing(clamp(data.swing, 0, 70));
       setFx({ ...d.fx, ...data.fx }); setSynth({ ...d.synth, ...data.synth });
       await clearSamples();
@@ -395,14 +488,14 @@ export default function App() {
               aria-label={playing ? 'Pause sequencer' : 'Play sequencer'}><Icon name={playing ? 'stop' : 'play'} size={25} /></button>
             <button className="transport-secondary" onClick={stopTransport} aria-label="Stop sequencer"><Icon name="stop" /></button>
             <button className={'transport-secondary record-button ' + (recording ? 'is-recording' : '')} onClick={toggleRecording}
-              aria-label={recording ? 'Stop and download recording' : 'Record master audio'}>
+              aria-label={recording ? 'Stop and download recording' : 'Record master audio'} title="Record audio to file, not sequencer steps">
               <Icon name="record" /></button>
           </div>
           <label className="tempo-block"><span className="overline">TEMPO / BPM</span>
             <div className="tempo-number"><input type="number" min="40" max="240" value={bpm} onChange={e => setBpm(clamp(e.target.value, 40, 240))} /><span>BPM</span></div></label>
           <label className="swing-block"><span className="overline">SWING</span>
             <div className="inline-range"><input aria-label="Swing amount" type="range" min="0" max="70" value={swing} onChange={e => setSwing(Number(e.target.value))} /><strong>{swing}%</strong></div></label>
-          <div className="transport-right"><div className="sync-led"><i className={playing ? 'on' : ''} /> {playing ? 'PLAYING' : 'READY'}</div>
+          <div className="transport-right"><div className="sync-led"><i className={playing ? 'on' : ''} /> {armed ? 'OVERDUB' : playing ? 'PLAYING' : 'READY'}</div>
             <span>4 / 4 · 16 STEPS</span></div>
         </section>
 
@@ -455,22 +548,74 @@ export default function App() {
                   <button className="seq-label seq-voice" onClick={() => { setSelected(row); triggerPad(row); }}>
                     <span className={'voice-dot voice-' + p.color} /><span>{p.sampleName ? p.sampleName.slice(0, 10).toUpperCase() : p.name}</span></button>
                   {banks[bank][row].map((on, step) => <button key={step}
-                    type="button" aria-label={p.name + ' step ' + (step + 1)}
+                    type="button" aria-label={p.name + ' step ' + (step + 1) +
+                      (on ? ' velocity ' + Math.round(velocities[bank][row][step] * 100) + '%' : '')}
                     aria-pressed={on}
                     onClick={() => toggleStep(row, step)}
+                    style={on ? { '--step-strength': String(0.4 + velocities[bank][row][step] * 0.6) } : undefined}
                     className={'step-cell ' + (on ? 'on step-' + p.color : '') + (playhead === step ? ' at-playhead' : '') +
+                      (selected === row && selectedStep === step ? ' step-editing' : '') +
                       (step % 4 === 0 ? ' beat-start' : '')}><i /></button>)}
                 </div>)}
               </div>
+            </div>
+            <div className="capture-strip">
+              <button type="button" className={'overdub-toggle ' + (armed ? 'is-armed' : '')}
+                onClick={toggleOverdub} aria-pressed={armed}>
+                <Icon name="record" size={15} /> {armed ? 'STOP PAD REC' : 'REC PADS'}
+              </button>
+              <label className="capture-select">QUANTIZE
+                <select aria-label="Live record quantization" value={quantize} onChange={e => setQuantize(e.target.value)}>
+                  <option value="1/16">1/16</option><option value="1/8">1/8</option><option value="1/4">1/4</option>
+                </select>
+              </label>
+              <label className="capture-velocity">KEY VELOCITY
+                <input type="range" min="0.05" max="1" step="0.01" value={padVelocity}
+                  onChange={e => setPadVelocity(Number(e.target.value))} aria-label="Computer keyboard pad velocity" />
+                <b>{Math.round(padVelocity * 100)}%</b>
+              </label>
+            </div>
+            <div className="velocity-editor">
+              <span>STEP VELOCITY · {'ABCD'[bank]} / {pads[selected].name} / {String(selectedStep + 1).padStart(2, '0')}</span>
+              <input type="range" min="0.05" max="1" step="0.01"
+                aria-label="Selected step velocity"
+                value={velocities[bank][selected][selectedStep] || DEFAULT_VELOCITY}
+                onChange={e => setStepVelocity(Number(e.target.value))} />
+              <b>{banks[bank][selected][selectedStep] ? Math.round(velocities[bank][selected][selectedStep] * 100) + '%' : 'OFF'}</b>
             </div>
             <div className="sequencer-actions">
               <button onClick={randomize}><Icon name="shuffle" size={15} /> GENERATE</button>
               <button onClick={copyBank}>COPY TO NEXT BANK</button>
               <button onClick={clearPattern}><Icon name="trash" size={15} /> CLEAR BANK</button>
             </div>
-            <div className="seq-bottom"><span><i /> LIVE STEP SCHEDULING</span><span>FOUR INDEPENDENT PATTERNS</span></div>
+            <div className="seq-bottom"><span><i /> {armed ? 'CAPTURING PERFORMANCE' : 'LIVE STEP SCHEDULING'}</span><span>PAD REC ≠ AUDIO EXPORT</span></div>
           </section>
         </div>
+
+        <section className="panel arranger-panel">
+          <div className="arranger-head">
+            <div><span className="overline">03 / PERFORMANCE ARRANGER</span><h2>Pattern Chain</h2>
+              <p>Choose a bank for each bar. Song mode loops this arrangement while you jam and record.</p></div>
+            <button className={'song-toggle ' + (songMode ? 'active' : '')}
+              onClick={() => setSongMode(old => !old)} aria-pressed={songMode}>
+              <span className="song-toggle-led" /> SONG MODE {songMode ? 'ON' : 'OFF'}
+            </button>
+          </div>
+          <div className="chain-grid" role="group" aria-label="Song arrangement, one pattern bank per bar">
+            {chain.map((slot, index) => <button key={index} type="button"
+              className={'chain-slot ' + (songMode && playing && activeBar % chain.length === index ? 'current' : '')}
+              aria-label={'Bar ' + (index + 1) + ', bank ' + 'ABCD'[slot] + ', click to change'}
+              title="Click to cycle through pattern banks A, B, C and D"
+              onClick={() => setChain(old => old.map((v, i) => i === index ? (v + 1) % 4 : v))}>
+              <span>BAR {String(index + 1).padStart(2, '0')}</span><b>{'ABCD'[slot]}</b></button>)}
+          </div>
+          <div className="arranger-actions"><span>{chain.length} BAR LOOP · CLICK A SLOT TO CYCLE BANKS</span>
+            <div><button type="button" disabled={chain.length >= 16}
+              onClick={() => setChain(old => [...old, old.at(-1) ?? 0])}>+ ADD BAR</button>
+              <button type="button" disabled={chain.length <= 1}
+                onClick={() => setChain(old => old.slice(0, -1))}>− REMOVE BAR</button></div>
+          </div>
+        </section>
 
         <div className="lower-grid">
           <section className="panel synth-panel">
